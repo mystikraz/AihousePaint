@@ -27,7 +27,6 @@ import { PaletteSuggestionTheme } from '@/app/api/gemini/suggest-palettes/route'
 import {
   ArchitecturalLayer,
   LayerColourAssignment,
-  cloneLayers,
   deserializeLayers,
   MAX_WORKING_MASK_PIXELS,
   serializeLayers,
@@ -201,7 +200,7 @@ export default function BihaniVisualizerPage() {
       {
         colors: { ...activeColors },
         codes: { ...colorCodesMap },
-        customLayers: cloneLayers(customLayers),
+        customLayers,
         customColourAssignments: { ...customColourAssignments },
       },
     ]);
@@ -224,7 +223,7 @@ export default function BihaniVisualizerPage() {
       {
         colors: { ...activeColors },
         codes: { ...colorCodesMap },
-        customLayers: cloneLayers(customLayers),
+        customLayers,
         customColourAssignments: { ...customColourAssignments },
       },
     ]);
@@ -250,14 +249,14 @@ export default function BihaniVisualizerPage() {
       {
         colors: { ...activeColors },
         codes: { ...colorCodesMap },
-        customLayers: cloneLayers(customLayers),
+        customLayers,
         customColourAssignments: { ...customColourAssignments },
       },
       ...prev,
     ]);
     setActiveColors(last.colors);
     setColorCodesMap(last.codes);
-    setCustomLayers(cloneLayers(last.customLayers));
+    setCustomLayers(last.customLayers);
     setCustomColourAssignments({ ...last.customColourAssignments });
     setHistory((prev) => prev.slice(0, prev.length - 1));
   };
@@ -270,13 +269,13 @@ export default function BihaniVisualizerPage() {
       {
         colors: { ...activeColors },
         codes: { ...colorCodesMap },
-        customLayers: cloneLayers(customLayers),
+        customLayers,
         customColourAssignments: { ...customColourAssignments },
       },
     ]);
     setActiveColors(next.colors);
     setColorCodesMap(next.codes);
-    setCustomLayers(cloneLayers(next.customLayers));
+    setCustomLayers(next.customLayers);
     setCustomColourAssignments({ ...next.customColourAssignments });
     setFuture((prev) => prev.slice(1));
   };
@@ -290,12 +289,12 @@ export default function BihaniVisualizerPage() {
       {
         colors: { ...activeColors },
         codes: { ...colorCodesMap },
-        customLayers: cloneLayers(customLayers),
+        customLayers,
         customColourAssignments: { ...customColourAssignments },
       },
     ]);
     setFuture([]);
-    setCustomLayers(cloneLayers(nextLayers));
+    setCustomLayers(nextLayers);
     setCustomColourAssignments({ ...nextAssignments });
   };
 

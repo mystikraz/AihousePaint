@@ -14,7 +14,7 @@ export interface RasterMask {
   data: Uint8Array;
 }
 
-export const MAX_WORKING_MASK_PIXELS = 4_000_000;
+export const MAX_WORKING_MASK_PIXELS = 2_000_000;
 
 export interface SerializedRasterMask {
   width: number;

@@ -29,7 +29,6 @@ import {
   ArchitecturalLayer,
   LayerColourAssignment,
   MAX_WORKING_MASK_PIXELS,
-  cloneLayers,
   layersFromPreset,
   paintMaskCircle,
   renderProjectToCanvas,
@@ -300,7 +299,7 @@ export function CanvasViewer({
       if (isBrushMode) {
         const selected = customLayers.find((layer) => layer.selected && !layer.locked);
         if (!selected) return;
-        const nextLayers = cloneLayers(customLayers).map((layer) =>
+        const nextLayers = customLayers.map((layer) =>
           layer.id === selected.id
             ? { ...layer, mask: paintMaskCircle(layer.mask, pixelX, pixelY, 28, isBrushErase ? 0 : 255, protectedMaskRef.current ?? undefined) }
             : layer

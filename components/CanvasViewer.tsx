@@ -28,6 +28,7 @@ import { BihaniColor } from '@/lib/bihani-colors';
 import {
   ArchitecturalLayer,
   LayerColourAssignment,
+  MAX_WORKING_MASK_PIXELS,
   cloneLayers,
   layersFromPreset,
   paintMaskCircle,
@@ -108,11 +109,19 @@ export function CanvasViewer({
 
     img.onload = () => {
       const srcCanvas = document.createElement('canvas');
-      srcCanvas.width = img.naturalWidth || 1920;
-      srcCanvas.height = img.naturalHeight || 1080;
+      const naturalWidth = img.naturalWidth || 1920;
+      const naturalHeight = img.naturalHeight || 1080;
+      const scale = Math.min(
+        1,
+        Math.sqrt(MAX_WORKING_MASK_PIXELS / (naturalWidth * naturalHeight)),
+        2048 / naturalWidth,
+        2048 / naturalHeight
+      );
+      srcCanvas.width = Math.max(1, Math.round(naturalWidth * scale));
+      srcCanvas.height = Math.max(1, Math.round(naturalHeight * scale));
       const sCtx = srcCanvas.getContext('2d', { willReadFrequently: true });
       if (sCtx) {
-        sCtx.drawImage(img, 0, 0);
+        sCtx.drawImage(img, 0, 0, srcCanvas.width, srcCanvas.height);
       }
       sourceCanvasRef.current = srcCanvas;
       protectedMaskRef.current = createHeuristicProtectedMask(srcCanvas);

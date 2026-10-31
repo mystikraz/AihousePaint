@@ -3,6 +3,10 @@
 import React from 'react';
 import { X, Trash2, FolderOpen, Calendar, MapPin, User } from 'lucide-react';
 import { CustomerDetails } from './CustomerDetailsCard';
+import {
+  LayerColourAssignment,
+  SerializedArchitecturalLayer,
+} from '@/lib/architectural-layer-engine';
 
 export interface SavedProject {
   id: string;
@@ -11,6 +15,9 @@ export interface SavedProject {
   customer: CustomerDetails;
   activeColors: Record<string, string>;
   colorCodesMap: Record<string, string>;
+  customImageSrc?: string | null;
+  customLayers?: SerializedArchitecturalLayer[];
+  customColourAssignments?: Record<string, LayerColourAssignment>;
   thumbnailDataUrl?: string;
 }
 

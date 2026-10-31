@@ -24,10 +24,20 @@ import {
 } from '@/lib/architectural-presets';
 import { BIHANI_COLORS, DEFAULT_COLOR, BihaniColor } from '@/lib/bihani-colors';
 import { PaletteSuggestionTheme } from '@/app/api/gemini/suggest-palettes/route';
+import {
+  ArchitecturalLayer,
+  LayerColourAssignment,
+  cloneLayers,
+  deserializeLayers,
+  MAX_WORKING_MASK_PIXELS,
+  serializeLayers,
+} from '@/lib/architectural-layer-engine';
 
 interface HistoryState {
   colors: Record<string, string>;
   codes: Record<string, string>;
+  customLayers: ArchitecturalLayer[];
+  customColourAssignments: Record<string, LayerColourAssignment>;
 }
 
 export default function BihaniVisualizerPage() {
@@ -55,6 +65,11 @@ export default function BihaniVisualizerPage() {
   const [colorCodesMap, setColorCodesMap] = useState<Record<string, string>>(
     initial.codeMap
   );
+  const [customLayers, setCustomLayers] = useState<ArchitecturalLayer[]>([]);
+  const [customColourAssignments, setCustomColourAssignments] = useState<
+    Record<string, LayerColourAssignment>
+  >({});
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   // Undo / Redo stacks (up to 25 steps)
   const [history, setHistory] = useState<HistoryState[]>([]);
@@ -110,6 +125,8 @@ export default function BihaniVisualizerPage() {
     const init = initializeColors(preset);
     setActiveColors(init.colMap);
     setColorCodesMap(init.codeMap);
+    setCustomLayers([]);
+    setCustomColourAssignments({});
     setHistory([]);
     setFuture([]);
     setIsGlancingOriginal(false);
@@ -123,17 +140,57 @@ export default function BihaniVisualizerPage() {
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        if (event.target?.result) {
-          setCustomImageSrc(event.target.result as string);
-          setHistory([]);
-          setFuture([]);
-        }
-      };
-      reader.readAsDataURL(file);
+    e.target.value = '';
+    setUploadError(null);
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setUploadError('Please choose a supported image file.');
+      return;
     }
+    if (file.size > 12 * 1024 * 1024) {
+      setUploadError('Images must be smaller than 12 MB.');
+      return;
+    }
+
+    const objectUrl = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      if (image.naturalWidth * image.naturalHeight > MAX_WORKING_MASK_PIXELS) {
+        setUploadError(null);
+      }
+      const scale = Math.min(
+        1,
+        Math.sqrt(MAX_WORKING_MASK_PIXELS / (image.naturalWidth * image.naturalHeight)),
+        2048 / image.naturalWidth,
+        2048 / image.naturalHeight
+      );
+      const width = Math.max(1, Math.round(image.naturalWidth * scale));
+      const height = Math.max(1, Math.round(image.naturalHeight * scale));
+      const resizeCanvas = document.createElement('canvas');
+      resizeCanvas.width = width;
+      resizeCanvas.height = height;
+      const resizeContext = resizeCanvas.getContext('2d');
+      if (!resizeContext) {
+        setUploadError('The image could not be prepared for editing.');
+        return;
+      }
+      resizeContext.drawImage(image, 0, 0, width, height);
+      const resizedDataUrl = resizeCanvas.toDataURL(
+        file.type === 'image/png' ? 'image/png' : 'image/jpeg',
+        0.92
+      );
+      setCustomImageSrc(resizedDataUrl);
+      setCustomLayers([]);
+      setCustomColourAssignments({});
+      setHistory([]);
+      setFuture([]);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      setUploadError('The selected file is not a readable image.');
+    };
+    image.src = objectUrl;
   };
 
   // Color a specific zone
@@ -141,7 +198,12 @@ export default function BihaniVisualizerPage() {
     // Record history
     setHistory((prev) => [
       ...prev.slice(-24),
-      { colors: { ...activeColors }, codes: { ...colorCodesMap } },
+      {
+        colors: { ...activeColors },
+        codes: { ...colorCodesMap },
+        customLayers: cloneLayers(customLayers),
+        customColourAssignments: { ...customColourAssignments },
+      },
     ]);
     setFuture([]);
 
@@ -159,7 +221,12 @@ export default function BihaniVisualizerPage() {
   const handleApplyPaletteTheme = (theme: PaletteSuggestionTheme) => {
     setHistory((prev) => [
       ...prev.slice(-24),
-      { colors: { ...activeColors }, codes: { ...colorCodesMap } },
+      {
+        colors: { ...activeColors },
+        codes: { ...colorCodesMap },
+        customLayers: cloneLayers(customLayers),
+        customColourAssignments: { ...customColourAssignments },
+      },
     ]);
     setFuture([]);
 
@@ -180,11 +247,18 @@ export default function BihaniVisualizerPage() {
     if (history.length === 0) return;
     const last = history[history.length - 1];
     setFuture((prev) => [
-      { colors: { ...activeColors }, codes: { ...colorCodesMap } },
+      {
+        colors: { ...activeColors },
+        codes: { ...colorCodesMap },
+        customLayers: cloneLayers(customLayers),
+        customColourAssignments: { ...customColourAssignments },
+      },
       ...prev,
     ]);
     setActiveColors(last.colors);
     setColorCodesMap(last.codes);
+    setCustomLayers(cloneLayers(last.customLayers));
+    setCustomColourAssignments({ ...last.customColourAssignments });
     setHistory((prev) => prev.slice(0, prev.length - 1));
   };
 
@@ -193,11 +267,36 @@ export default function BihaniVisualizerPage() {
     const next = future[0];
     setHistory((prev) => [
       ...prev,
-      { colors: { ...activeColors }, codes: { ...colorCodesMap } },
+      {
+        colors: { ...activeColors },
+        codes: { ...colorCodesMap },
+        customLayers: cloneLayers(customLayers),
+        customColourAssignments: { ...customColourAssignments },
+      },
     ]);
     setActiveColors(next.colors);
     setColorCodesMap(next.codes);
+    setCustomLayers(cloneLayers(next.customLayers));
+    setCustomColourAssignments({ ...next.customColourAssignments });
     setFuture((prev) => prev.slice(1));
+  };
+
+  const handleCustomPaint = (
+    nextLayers: ArchitecturalLayer[],
+    nextAssignments: Record<string, LayerColourAssignment>
+  ) => {
+    setHistory((prev) => [
+      ...prev.slice(-24),
+      {
+        colors: { ...activeColors },
+        codes: { ...colorCodesMap },
+        customLayers: cloneLayers(customLayers),
+        customColourAssignments: { ...customColourAssignments },
+      },
+    ]);
+    setFuture([]);
+    setCustomLayers(cloneLayers(nextLayers));
+    setCustomColourAssignments({ ...nextAssignments });
   };
 
   // Glance original photo toggle
@@ -219,6 +318,9 @@ export default function BihaniVisualizerPage() {
       customer: { ...customerDetails },
       activeColors: { ...activeColors },
       colorCodesMap: { ...colorCodesMap },
+      customImageSrc,
+      customLayers: serializeLayers(customLayers),
+      customColourAssignments: { ...customColourAssignments },
     };
 
     const updated = [newProject, ...savedProjects];
@@ -254,9 +356,11 @@ export default function BihaniVisualizerPage() {
       ARCHITECTURAL_PRESETS.find((p) => p.id === project.presetId) ||
       ARCHITECTURAL_PRESETS[0];
     setActivePreset(matchedPreset);
-    setCustomImageSrc(null);
+    setCustomImageSrc(project.customImageSrc ?? null);
     setActiveColors(project.activeColors);
     setColorCodesMap(project.colorCodesMap);
+    setCustomLayers(project.customLayers ? deserializeLayers(project.customLayers) : []);
+    setCustomColourAssignments(project.customColourAssignments ?? {});
     setCustomerDetails(project.customer);
     setHistory([]);
     setFuture([]);
@@ -297,6 +401,11 @@ export default function BihaniVisualizerPage() {
 
       {/* Main Workspace Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-3 flex flex-col">
+        {uploadError && (
+          <p role="alert" className="mb-3 rounded-lg bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">
+            {uploadError}
+          </p>
+        )}
         {/* Interactive Canvas Recolor Engine & Split Slider */}
         <CanvasViewer
           preset={activePreset}
@@ -309,6 +418,9 @@ export default function BihaniVisualizerPage() {
             setActiveColors(colors);
             setColorCodesMap(codes);
           }}
+          customLayers={customLayers}
+          customColourAssignments={customColourAssignments}
+          onCustomPaint={handleCustomPaint}
           canUndo={history.length > 0}
           canRedo={future.length > 0}
           onUndo={handleUndo}

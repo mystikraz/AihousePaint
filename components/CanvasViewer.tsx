@@ -10,17 +10,30 @@ import {
   Save,
   SplitSquareVertical,
   MousePointerClick,
+  Eye,
+  EyeOff,
+  Lock,
+  Unlock,
 } from 'lucide-react';
 import {
   ArchitecturalPreset,
   ArchitecturalZone,
 } from '@/lib/architectural-presets';
 import {
-  renderRecoloredCanvas,
   isPointInZone,
-  floodFillRecolor,
+  isProtectedNonWallPixel,
+  createHeuristicProtectedMask,
 } from '@/lib/canvas-recolor';
 import { BihaniColor } from '@/lib/bihani-colors';
+import {
+  ArchitecturalLayer,
+  LayerColourAssignment,
+  cloneLayers,
+  layersFromPreset,
+  paintMaskCircle,
+  renderProjectToCanvas,
+} from '@/lib/architectural-layer-engine';
+import { FloodFillSegmentationProvider } from '@/lib/segmentation';
 
 interface CanvasViewerProps {
   preset: ArchitecturalPreset;
@@ -30,6 +43,12 @@ interface CanvasViewerProps {
   colorCodesMap: Record<string, string>; // zoneId -> code
   onColorZone: (zoneId: string, color: BihaniColor) => void;
   onApplyPaletteMap: (colorMap: Record<string, string>, codesMap: Record<string, string>) => void;
+  customLayers: ArchitecturalLayer[];
+  customColourAssignments: Record<string, LayerColourAssignment>;
+  onCustomPaint: (
+    layers: ArchitecturalLayer[],
+    assignments: Record<string, LayerColourAssignment>
+  ) => void;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
@@ -53,6 +72,9 @@ export function CanvasViewer({
   onSaveClick,
   isCompareMode,
   onToggleCompare,
+  customLayers,
+  customColourAssignments,
+  onCustomPaint,
 }: CanvasViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -73,6 +95,10 @@ export function CanvasViewer({
     xPct: number;
     yPct: number;
   } | null>(null);
+  const [isBrushMode, setIsBrushMode] = useState(false);
+  const [isBrushErase, setIsBrushErase] = useState(false);
+  const segmentationProvider = useRef(new FloodFillSegmentationProvider());
+  const protectedMaskRef = useRef<import('@/lib/architectural-layer-engine').RasterMask | null>(null);
 
   // Initialize source and buffer canvases when image source changes
   useEffect(() => {
@@ -89,6 +115,7 @@ export function CanvasViewer({
         sCtx.drawImage(img, 0, 0);
       }
       sourceCanvasRef.current = srcCanvas;
+      protectedMaskRef.current = createHeuristicProtectedMask(srcCanvas);
 
       const recCanvas = document.createElement('canvas');
       recCanvas.width = srcCanvas.width;
@@ -105,20 +132,30 @@ export function CanvasViewer({
       return;
     }
 
-    if (!isCustomImage) {
-      renderRecoloredCanvas(
-        sourceCanvasRef.current,
-        recolorCanvasRef.current,
-        preset.zones,
-        activeColors,
-        hoveredZone ? hoveredZone.id : null
-      );
-    } else {
-      const rCtx = recolorCanvasRef.current.getContext('2d');
-      if (rCtx) {
-        rCtx.drawImage(sourceCanvasRef.current, 0, 0);
-      }
-    }
+    const layers = isCustomImage
+      ? customLayers
+      : layersFromPreset(
+          preset.zones,
+          sourceCanvasRef.current.width,
+          sourceCanvasRef.current.height
+        );
+    const assignments = isCustomImage
+      ? customColourAssignments
+      : Object.fromEntries(
+          layers
+            .filter((layer) => activeColors[layer.id])
+            .map((layer) => [layer.id, {
+              colorId: layer.assignedColorId ?? layer.id,
+              colorHex: activeColors[layer.id],
+            }])
+        );
+    renderProjectToCanvas(
+      sourceCanvasRef.current,
+      recolorCanvasRef.current,
+      layers,
+      assignments,
+      isCustomImage && protectedMaskRef.current ? [protectedMaskRef.current] : []
+    );
 
     // Draw to visible display canvas
     const dispCanvas = displayCanvasRef.current;
@@ -178,6 +215,8 @@ export function CanvasViewer({
     isCustomImage,
     isCompareMode,
     sliderPosition,
+    customLayers,
+    customColourAssignments,
   ]);
 
   // Coordinate helper
@@ -190,10 +229,18 @@ export function CanvasViewer({
     const clientX = e.clientX - rect.left;
     const clientY = e.clientY - rect.top;
 
-    const xPct = (clientX / rect.width) * 100;
-    const yPct = (clientY / rect.height) * 100;
-    const pixelX = Math.floor((clientX / rect.width) * canvas.width);
-    const pixelY = Math.floor((clientY / rect.height) * canvas.height);
+    const sourceAspect = canvas.width / canvas.height;
+    const displayAspect = rect.width / rect.height;
+    const drawnWidth = sourceAspect > displayAspect ? rect.width : rect.height * sourceAspect;
+    const drawnHeight = sourceAspect > displayAspect ? rect.width / sourceAspect : rect.height;
+    const offsetX = (rect.width - drawnWidth) / 2;
+    const offsetY = (rect.height - drawnHeight) / 2;
+    const imageX = Math.max(0, Math.min(drawnWidth, clientX - offsetX));
+    const imageY = Math.max(0, Math.min(drawnHeight, clientY - offsetY));
+    const xPct = (imageX / drawnWidth) * 100;
+    const yPct = (imageY / drawnHeight) * 100;
+    const pixelX = Math.max(0, Math.min(canvas.width - 1, Math.floor((imageX / drawnWidth) * canvas.width)));
+    const pixelY = Math.max(0, Math.min(canvas.height - 1, Math.floor((imageY / drawnHeight) * canvas.height)));
 
     return { xPct, yPct, pixelX, pixelY };
   };
@@ -240,31 +287,56 @@ export function CanvasViewer({
         });
         setTimeout(() => setClickNotification(null), 1800);
       }
-    } else {
-      if (recolorCanvasRef.current && displayCanvasRef.current) {
-        const rCtx = recolorCanvasRef.current.getContext('2d');
-        if (rCtx) {
-          const filled = floodFillRecolor(
-            rCtx,
-            pixelX,
-            pixelY,
-            activeColor.hex,
-            32
-          );
-          if (filled) {
-            const dispCtx = displayCanvasRef.current.getContext('2d');
-            if (dispCtx) {
-              dispCtx.drawImage(recolorCanvasRef.current, 0, 0);
-            }
-            setClickNotification({
-              text: `Recolored section with ${activeColor.code}`,
-              xPct,
-              yPct,
-            });
-            setTimeout(() => setClickNotification(null), 1800);
-          }
-        }
+    } else if (sourceCanvasRef.current) {
+      if (isBrushMode) {
+        const selected = customLayers.find((layer) => layer.selected && !layer.locked);
+        if (!selected) return;
+        const nextLayers = cloneLayers(customLayers).map((layer) =>
+          layer.id === selected.id
+            ? { ...layer, mask: paintMaskCircle(layer.mask, pixelX, pixelY, 28, isBrushErase ? 0 : 255, protectedMaskRef.current ?? undefined) }
+            : layer
+        );
+        onCustomPaint(nextLayers, customColourAssignments);
+        return;
       }
+
+      const sourceCtx = sourceCanvasRef.current.getContext('2d', { willReadFrequently: true });
+      if (!sourceCtx) return;
+      const mask = segmentationProvider.current.segmentAtPoint({
+        sourceContext: sourceCtx,
+        x: pixelX,
+        y: pixelY,
+        tolerance: 32,
+        protectedPredicate: isProtectedNonWallPixel,
+      });
+      if (!mask.data.some(Boolean)) return;
+      const layerId = `manual-${Date.now()}`;
+      const nextLayer: ArchitecturalLayer = {
+        id: layerId,
+        parentId: null,
+        name: `Uploaded surface ${customLayers.length + 1}`,
+        type: 'manual',
+        mask,
+        confidence: 0.55,
+        visible: true,
+        locked: false,
+        selected: true,
+        assignedColorId: activeColor.code,
+        zIndex: customLayers.length,
+        source: 'manual',
+      };
+      const nextLayers = customLayers.map((layer) => ({ ...layer, selected: false }));
+      nextLayers.push(nextLayer);
+      onCustomPaint(nextLayers, {
+        ...customColourAssignments,
+        [layerId]: {
+          colorId: activeColor.code,
+          colorHex: activeColor.hex,
+          colorCode: activeColor.code,
+        },
+      });
+      setClickNotification({ text: `Selected surface with ${activeColor.code}`, xPct, yPct });
+      setTimeout(() => setClickNotification(null), 1800);
     }
   };
 
@@ -453,6 +525,39 @@ export function CanvasViewer({
             <SplitSquareVertical className="w-3.5 h-3.5 text-slate-600" />
             <span>{isCompareMode ? 'Exit Split' : 'Split Slider'}</span>
           </button>
+
+          {isCustomImage && (
+            <>
+              <div className="h-4 w-px bg-slate-200 mx-1" />
+              <button
+                type="button"
+                onClick={() => {
+                  setIsBrushMode((enabled) => !enabled);
+                  setIsBrushErase(false);
+                }}
+                className={`text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors ${
+                  isBrushMode
+                    ? 'bg-[#147a82]/10 text-[#147a82] border-[#147a82]'
+                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                {isBrushMode ? 'Brush on' : 'Refine mask'}
+              </button>
+              {isBrushMode && (
+                <button
+                  type="button"
+                  onClick={() => setIsBrushErase((erasing) => !erasing)}
+                  className={`text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors ${
+                    isBrushErase
+                      ? 'bg-rose-50 text-rose-700 border-rose-200'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  {isBrushErase ? 'Erase' : 'Add'}
+                </button>
+              )}
+            </>
+          )}
         </div>
 
         {/* Right: Save Project Button */}
@@ -467,6 +572,55 @@ export function CanvasViewer({
           </button>
         </div>
       </div>
+
+      {isCustomImage && customLayers.length > 0 && (
+        <div className="w-full mt-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-2xs">
+          <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+            Uploaded image layers
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {customLayers.map((layer) => (
+              <div key={layer.id} className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
+                <button
+                  type="button"
+                  onClick={() => onCustomPaint(
+                    customLayers.map((candidate) => ({ ...candidate, selected: candidate.id === layer.id })),
+                    customColourAssignments
+                  )}
+                  className={`max-w-40 truncate rounded-md px-2 py-1 text-xs font-medium ${
+                    layer.selected ? 'bg-[#147a82]/10 text-[#147a82]' : 'text-slate-600 hover:bg-white'
+                  }`}
+                  aria-pressed={layer.selected}
+                >
+                  {layer.name}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onCustomPaint(
+                    customLayers.map((candidate) => candidate.id === layer.id ? { ...candidate, visible: !candidate.visible } : candidate),
+                    customColourAssignments
+                  )}
+                  className="rounded-md p-1 text-slate-500 hover:bg-white hover:text-slate-800"
+                  aria-label={`${layer.visible ? 'Hide' : 'Show'} ${layer.name}`}
+                >
+                  {layer.visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onCustomPaint(
+                    customLayers.map((candidate) => candidate.id === layer.id ? { ...candidate, locked: !candidate.locked } : candidate),
+                    customColourAssignments
+                  )}
+                  className="rounded-md p-1 text-slate-500 hover:bg-white hover:text-slate-800"
+                  aria-label={`${layer.locked ? 'Unlock' : 'Lock'} ${layer.name}`}
+                >
+                  {layer.locked ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Pre-calibrated Architectural Zones Quick Selector */}
       {!isCustomImage && (

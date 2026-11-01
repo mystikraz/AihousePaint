@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   ArchitecturalLayer,
   createEmptyMask,
+  createRectangleMask,
   createSelectionOverlayData,
   deserializeLayers,
   floodFillMask,
@@ -59,6 +60,16 @@ test('rasterizes preset polygons and respects holes', () => {
   ]);
   assert.equal(mask.data[1 * 10 + 1], 255);
   assert.equal(mask.data[5 * 10 + 5], 0);
+});
+
+test('creates rectangle selections without including protected pixels', () => {
+  const protectedMask = createEmptyMask(5, 4);
+  protectedMask.data[1 * 5 + 2] = 255;
+  const mask = createRectangleMask(5, 4, 1, 1, 3, 2, protectedMask);
+  assert.equal(mask.data[1 * 5 + 1], 255);
+  assert.equal(mask.data[1 * 5 + 2], 0);
+  assert.equal(mask.data[2 * 5 + 3], 255);
+  assert.equal(mask.data[0], 0);
 });
 
 test('converts existing preset zones into independent layers', () => {
@@ -276,6 +287,15 @@ test('brush refinement adds and erases only the selected mask', () => {
   assert.equal(added.data[4 * 9 + 4], 255);
   assert.equal(erased.data[4 * 9 + 4], 0);
   assert.equal(mask.data[4 * 9 + 4], 0);
+});
+
+test('brush erase can remove a protected pixel from a mistaken selection', () => {
+  const mask = createEmptyMask(3, 1);
+  mask.data.fill(255);
+  const protectedMask = createEmptyMask(3, 1);
+  protectedMask.data[1] = 255;
+  paintMaskCircleInPlace(mask, 1, 0, 1, 0, protectedMask);
+  assert.deepEqual(Array.from(mask.data), [0, 0, 0]);
 });
 
 test('renders independent colours, preserves untouched pixels, and protects regions', () => {

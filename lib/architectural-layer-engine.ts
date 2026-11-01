@@ -77,6 +77,37 @@ export function createEmptyMask(width: number, height: number): RasterMask {
   return { width, height, data: new Uint8Array(width * height) };
 }
 
+export function createRectangleMask(
+  width: number,
+  height: number,
+  startX: number,
+  startY: number,
+  endX: number,
+  endY: number,
+  protectedMask?: RasterMask
+): RasterMask {
+  const mask = createEmptyMask(width, height);
+  if (protectedMask && (
+    protectedMask.width !== width ||
+    protectedMask.height !== height ||
+    protectedMask.data.length !== mask.data.length
+  )) {
+    throw new RangeError('Protected mask dimensions do not match the rectangle selection.');
+  }
+
+  const left = Math.max(0, Math.min(width, Math.floor(Math.min(startX, endX))));
+  const right = Math.max(0, Math.min(width, Math.ceil(Math.max(startX, endX)) + 1));
+  const top = Math.max(0, Math.min(height, Math.floor(Math.min(startY, endY))));
+  const bottom = Math.max(0, Math.min(height, Math.ceil(Math.max(startY, endY)) + 1));
+  for (let y = top; y < bottom; y++) {
+    for (let x = left; x < right; x++) {
+      const pixel = y * width + x;
+      if (!protectedMask?.data[pixel]) mask.data[pixel] = 255;
+    }
+  }
+  return mask;
+}
+
 export function createSelectionOverlayData(
   mask: RasterMask,
   protectedMask?: RasterMask
@@ -324,7 +355,10 @@ export function paintMaskCircleInPlace(
       const dx = x - centerX;
       const dy = y - centerY;
       const pixel = y * mask.width + x;
-      if (dx * dx + dy * dy <= radiusSquared && !protectedMask?.data[pixel]) {
+      if (
+        dx * dx + dy * dy <= radiusSquared &&
+        (value === 0 || !protectedMask?.data[pixel])
+      ) {
         mask.data[pixel] = value;
       }
     }

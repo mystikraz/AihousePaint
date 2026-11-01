@@ -32,6 +32,7 @@ import {
   RasterMask,
   cloneMask,
   createSelectionOverlayData,
+  createRectangleMask,
   layersFromPreset,
   mergeMasks,
   paintMaskStrokeInPlace,
@@ -96,9 +97,16 @@ export function CanvasViewer({
   const [hoveredZone, setHoveredZone] = useState<ArchitecturalZone | null>(null);
   const [sliderPosition, setSliderPosition] = useState(50); // 0 to 100 percentage
   const [isDraggingSlider, setIsDraggingSlider] = useState(false);
-  const [selectionMode, setSelectionMode] = useState<'select' | 'add' | 'remove' | 'brush-add' | 'brush-remove'>('select');
+  const [selectionMode, setSelectionMode] = useState<'select' | 'rectangle' | 'add' | 'remove' | 'brush-add' | 'brush-remove'>('select');
   const [brushRadius, setBrushRadius] = useState(28);
   const [isSegmenting, setIsSegmenting] = useState(false);
+  const [rectangleDraft, setRectangleDraft] = useState<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    currentX: number;
+    currentY: number;
+  } | null>(null);
   const [clickNotification, setClickNotification] = useState<{
     text: string;
     xPct: number;
@@ -119,6 +127,7 @@ export function CanvasViewer({
   const segmentationAbortRef = useRef<AbortController | null>(null);
   const segmentationRequestIdRef = useRef(0);
   const isBrushMode = selectionMode === 'brush-add' || selectionMode === 'brush-remove';
+  const isRectangleMode = selectionMode === 'rectangle';
 
   useEffect(() => () => segmentationProvider.current.dispose(), []);
 
@@ -136,6 +145,7 @@ export function CanvasViewer({
     img.onload = () => {
       setIsSegmenting(false);
       setSelectionMode('select');
+      setRectangleDraft(null);
       setBrushRadius(28);
       const srcCanvas = document.createElement('canvas');
       const naturalWidth = img.naturalWidth || 1920;
@@ -278,6 +288,21 @@ export function CanvasViewer({
         ctx.drawImage(overlayCanvas, 0, 0);
       }
     }
+
+    if (isCustomImage && !isCompareMode && rectangleDraft) {
+      const left = Math.min(rectangleDraft.startX, rectangleDraft.currentX);
+      const top = Math.min(rectangleDraft.startY, rectangleDraft.currentY);
+      const width = Math.abs(rectangleDraft.currentX - rectangleDraft.startX);
+      const height = Math.abs(rectangleDraft.currentY - rectangleDraft.startY);
+      ctx.save();
+      ctx.fillStyle = 'rgba(20, 122, 130, 0.16)';
+      ctx.strokeStyle = '#147a82';
+      ctx.lineWidth = Math.max(2, width / 180);
+      ctx.setLineDash([8, 5]);
+      ctx.fillRect(left, top, width, height);
+      ctx.strokeRect(left, top, width, height);
+      ctx.restore();
+    }
   }, [
     imageLoaded,
     activeColors,
@@ -291,6 +316,7 @@ export function CanvasViewer({
     customColourAssignments,
     selectionMode,
     isBrushMode,
+    rectangleDraft,
   ]);
 
   // Coordinate helper
@@ -376,7 +402,21 @@ export function CanvasViewer({
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!isBrushMode || !isCustomImage || isCompareMode) return;
+    if (!isCustomImage || isCompareMode) return;
+    if (isRectangleMode) {
+      e.preventDefault();
+      e.currentTarget.setPointerCapture(e.pointerId);
+      const { pixelX, pixelY } = getCanvasCoords(e);
+      setRectangleDraft({
+        pointerId: e.pointerId,
+        startX: pixelX,
+        startY: pixelY,
+        currentX: pixelX,
+        currentY: pixelY,
+      });
+      return;
+    }
+    if (!isBrushMode) return;
     const selected = customLayers.find((layer) => layer.selected && !layer.locked);
     if (!selected) return;
     e.preventDefault();
@@ -395,6 +435,12 @@ export function CanvasViewer({
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (rectangleDraft?.pointerId === e.pointerId) {
+      e.preventDefault();
+      const { pixelX, pixelY } = getCanvasCoords(e);
+      setRectangleDraft((draft) => draft ? { ...draft, currentX: pixelX, currentY: pixelY } : draft);
+      return;
+    }
     const stroke = brushStrokeRef.current;
     if (!stroke || stroke.pointerId !== e.pointerId) return;
     e.preventDefault();
@@ -403,6 +449,58 @@ export function CanvasViewer({
   };
 
   const finishBrushStroke = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.type === 'pointercancel') {
+      brushStrokeRef.current = null;
+      setRectangleDraft(null);
+      return;
+    }
+    if (rectangleDraft?.pointerId === e.pointerId) {
+      const { pixelX, pixelY, xPct, yPct } = getCanvasCoords(e);
+      const mask = createRectangleMask(
+        sourceCanvasRef.current?.width ?? 1,
+        sourceCanvasRef.current?.height ?? 1,
+        rectangleDraft.startX,
+        rectangleDraft.startY,
+        pixelX,
+        pixelY,
+        protectedMaskRef.current ?? undefined
+      );
+      setRectangleDraft(null);
+      if (!mask.data.some(Boolean)) return;
+      const layerId = `rectangle-${Date.now()}`;
+      const nextLayer: ArchitecturalLayer = {
+        id: layerId,
+        parentId: null,
+        name: `Rectangle selection ${customLayers.length + 1}`,
+        type: 'manual',
+        mask,
+        confidence: 1,
+        visible: true,
+        locked: false,
+        selected: true,
+        assignedColorId: activeColor.code,
+        zIndex: customLayers.length,
+        source: 'manual',
+      };
+      onCustomPaint(
+        customLayers.map((layer) => ({ ...layer, selected: false })).concat(nextLayer),
+        {
+          ...customColourAssignments,
+          [layerId]: {
+            colorId: activeColor.code,
+            colorHex: activeColor.hex,
+            colorCode: activeColor.code,
+          },
+        }
+      );
+      setClickNotification({
+        text: `Rectangle selected and painted with ${activeColor.code}`,
+        xPct,
+        yPct,
+      });
+      setTimeout(() => setClickNotification(null), 1800);
+      return;
+    }
     const stroke = brushStrokeRef.current;
     if (!stroke || stroke.pointerId !== e.pointerId) return;
     brushStrokeRef.current = null;
@@ -414,7 +512,7 @@ export function CanvasViewer({
 
   // Click handler
   const handleCanvasClick = async (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (isCompareMode || isBrushMode || isSegmenting) return;
+    if (isCompareMode || isBrushMode || isRectangleMode || isSegmenting) return;
     const { xPct, yPct, pixelX, pixelY } = getCanvasCoords(e);
 
     if (!isCustomImage) {
@@ -755,6 +853,7 @@ export function CanvasViewer({
               )}
               {([
                 ['select', 'Select surface'],
+                ['rectangle', 'Rectangle select'],
                 ['add', 'Add area'],
                 ['remove', 'Remove area'],
               ] as const).map(([mode, label]) => (

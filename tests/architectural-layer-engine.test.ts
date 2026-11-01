@@ -3,13 +3,24 @@ import test from 'node:test';
 import {
   ArchitecturalLayer,
   createEmptyMask,
+  createSelectionOverlayData,
   deserializeLayers,
+  floodFillMask,
+  floodFillMaskFromPreparedImageAsync,
   layersFromPreset,
+  mergeMasks,
   paintMaskCircle,
+  paintMaskCircleInPlace,
+  paintMaskStrokeInPlace,
   renderLayeredImage,
   rasterizePolygonMask,
+  prepareLabImage,
   serializeLayers,
+  subtractMask,
 } from '../lib/architectural-layer-engine';
+import { isProtectedNonWallPixel } from '../lib/canvas-recolor';
+import { LocalEdgeAwareProvider, WorkerEdgeAwareProvider } from '../lib/segmentation';
+const { calculateMaskMetrics } = require('../scripts/segmentation-benchmark.cjs');
 
 class TestImageData {
   readonly data: Uint8ClampedArray;
@@ -73,6 +84,191 @@ test('converts existing preset zones into independent layers', () => {
   assert.notEqual(layers[0].mask.data, layers[1].mask.data);
 });
 
+test('highlights selected masks with a visible boundary without covering protected pixels', () => {
+  const mask = createEmptyMask(5, 5);
+  for (let y = 1; y <= 3; y++) {
+    for (let x = 1; x <= 3; x++) mask.data[y * 5 + x] = 255;
+  }
+  const protectedMask = createEmptyMask(5, 5);
+  protectedMask.data[2 * 5 + 4] = 255;
+  const overlay = createSelectionOverlayData(mask, protectedMask);
+
+  assert.equal(overlay[(2 * 5 + 2) * 4 + 3], 20);
+  assert.equal(overlay[(2 * 5 + 1) * 4 + 3], 180);
+  assert.equal(overlay[(2 * 5) * 4 + 3], 0);
+  assert.equal(overlay[(2 * 5 + 4) * 4 + 3], 0);
+});
+
+test('flood fill follows gradual wall texture but stops at strong edges', () => {
+  const pixels = new TestImageData(6, 1) as unknown as ImageData;
+  pixels.data.set([
+    100, 100, 100, 255,
+    110, 110, 110, 255,
+    120, 120, 120, 255,
+    130, 130, 130, 255,
+    140, 140, 140, 255,
+    220, 220, 220, 255,
+  ]);
+  const sourceContext = {
+    canvas: { width: 6, height: 1 },
+    getImageData: () => pixels,
+  } as unknown as CanvasRenderingContext2D;
+
+  const mask = floodFillMask(sourceContext, 0, 0, { tolerance: 18 });
+  assert.deepEqual(Array.from(mask.data), [255, 255, 255, 255, 255, 0]);
+});
+
+test('flood fill does not cross protected pixels', () => {
+  const pixels = new TestImageData(5, 1) as unknown as ImageData;
+  pixels.data.set([
+    100, 100, 100, 255,
+    100, 100, 100, 255,
+    200, 200, 200, 255,
+    100, 100, 100, 255,
+    100, 100, 100, 255,
+  ]);
+  const sourceContext = {
+    canvas: { width: 5, height: 1 },
+    getImageData: () => pixels,
+  } as unknown as CanvasRenderingContext2D;
+
+  const mask = floodFillMask(sourceContext, 0, 0, {
+    protectedPredicate: (r) => r === 200,
+  });
+  assert.deepEqual(Array.from(mask.data), [255, 255, 0, 0, 0]);
+});
+
+test('prepared-image segmentation is deterministic and can be cancelled', async () => {
+  const pixels = new TestImageData(160, 160) as unknown as ImageData;
+  for (let pixel = 0; pixel < 160 * 160; pixel++) {
+    pixels.data.set([100, 100, 100, 255], pixel * 4);
+  }
+  const lab = prepareLabImage(160, 160, pixels.data);
+  const sourceContext = {
+    canvas: { width: 160, height: 160 },
+    getImageData: () => pixels,
+  } as unknown as CanvasRenderingContext2D;
+  const sync = floodFillMask(sourceContext, 80, 80);
+  const asyncMask = await floodFillMaskFromPreparedImageAsync(
+    160, 160, pixels.data, lab, 80, 80
+  );
+  assert.deepEqual(asyncMask.data, sync.data);
+
+  const controller = new AbortController();
+  const pending = floodFillMaskFromPreparedImageAsync(
+    160, 160, pixels.data, lab, 80, 80, {}, undefined, controller.signal
+  );
+  setTimeout(() => controller.abort(), 0);
+  await assert.rejects(pending, (error: Error) => error.name === 'AbortError');
+});
+
+test('local provider advertises supported prompts and respects edge-aware selection', () => {
+  const pixels = new TestImageData(3, 1) as unknown as ImageData;
+  pixels.data.set([100, 100, 100, 255, 110, 110, 110, 255, 230, 230, 230, 255]);
+  const sourceContext = {
+    canvas: { width: 3, height: 1 },
+    getImageData: () => pixels,
+  } as unknown as CanvasRenderingContext2D;
+  const provider = new LocalEdgeAwareProvider();
+
+  assert.deepEqual(provider.capabilities, {
+    positiveClicks: true,
+    negativeClicks: false,
+    boundingBox: false,
+    localProcessing: true,
+  });
+  assert.deepEqual(
+    Array.from(provider.segmentAtPoint({ sourceContext, x: 0, y: 0, tolerance: 18 }).mask.data),
+    [255, 255, 0]
+  );
+});
+
+test('local provider unions positive clicks and reports unsupported prompts explicitly', () => {
+  const pixels = new TestImageData(5, 1) as unknown as ImageData;
+  pixels.data.set([
+    100, 100, 100, 255,
+    100, 100, 100, 255,
+    230, 230, 230, 255,
+    100, 100, 100, 255,
+    100, 100, 100, 255,
+  ]);
+  const sourceContext = {
+    canvas: { width: 5, height: 1 },
+    getImageData: () => pixels,
+  } as unknown as CanvasRenderingContext2D;
+  const provider = new LocalEdgeAwareProvider();
+
+  const result = provider.segmentAtPoint({
+    sourceContext,
+    x: 0,
+    y: 0,
+    positivePoints: [{ x: 0, y: 0 }, { x: 4, y: 0 }],
+    tolerance: 18,
+  });
+  assert.deepEqual(Array.from(result.mask.data), [255, 255, 0, 255, 255]);
+  assert.throws(() => provider.segmentAtPoint({
+    sourceContext,
+    x: 0,
+    y: 0,
+    negativePoints: [{ x: 2, y: 0 }],
+  }), /does not support negative click prompts/);
+});
+
+test('worker provider clearly reports main-thread fallback when workers are unavailable', async () => {
+  const pixels = new TestImageData(2, 1) as unknown as ImageData;
+  pixels.data.set([100, 100, 100, 255, 110, 110, 110, 255]);
+  const sourceContext = {
+    canvas: { width: 2, height: 1 },
+    getImageData: () => pixels,
+  } as unknown as CanvasRenderingContext2D;
+  const provider = new WorkerEdgeAwareProvider();
+  const result = await provider.segmentAtPoint({
+    sourceContext,
+    x: 0,
+    y: 0,
+    protectedMask: createEmptyMask(2, 1),
+  });
+  assert.equal(result.method, 'fallback-local-edge-aware');
+  assert.match(result.warning ?? '', /main thread/);
+  assert.ok(result.latencyMs !== undefined);
+});
+
+test('brick-like brown pixels are paintable while vegetation remains protected', () => {
+  assert.equal(isProtectedNonWallPixel(150, 85, 55, 0.6), false);
+  assert.equal(isProtectedNonWallPixel(35, 95, 40, 0.6), true);
+});
+
+test('sky pixels remain protected across the upper half of house photos', () => {
+  assert.equal(isProtectedNonWallPixel(145, 180, 220, 0.38), true);
+  assert.equal(isProtectedNonWallPixel(210, 214, 216, 0.44), true);
+  assert.equal(isProtectedNonWallPixel(150, 85, 55, 0.38), false);
+});
+
+test('selection masks can add and subtract segmented regions independently', () => {
+  const first = createEmptyMask(4, 1);
+  first.data.set([255, 0, 0, 0]);
+  const second = createEmptyMask(4, 1);
+  second.data.set([0, 255, 255, 0]);
+
+  const merged = mergeMasks(first, second);
+  const reduced = subtractMask(merged, second);
+  assert.deepEqual(Array.from(merged.data), [255, 255, 255, 0]);
+  assert.deepEqual(Array.from(reduced.data), [255, 0, 0, 0]);
+  assert.deepEqual(Array.from(first.data), [255, 0, 0, 0]);
+});
+
+test('continuous brush strokes fill gaps and do not change their source mask', () => {
+  const source = createEmptyMask(12, 5);
+  const working = { ...source, data: new Uint8Array(source.data) };
+  paintMaskStrokeInPlace(working, 2, 2, 10, 2, 1, 255);
+  paintMaskCircleInPlace(working, 10, 2, 1, 0);
+
+  assert.equal(working.data[2 * 12 + 2], 255);
+  assert.equal(working.data[2 * 12 + 6], 255);
+  assert.equal(working.data[2 * 12 + 10], 0);
+  assert.equal(source.data[2 * 12 + 2], 0);
+});
+
 test('brush refinement adds and erases only the selected mask', () => {
   const mask = createEmptyMask(9, 9);
   const added = paintMaskCircle(mask, 4, 4, 2);
@@ -100,9 +296,32 @@ test('renders independent colours, preserves untouched pixels, and protects regi
     },
     [protectedMask]
   );
+  const recoloured = renderLayeredImage(
+    source,
+    [layer('first', first, 0), layer('second', second, 1)],
+    {
+      first: { colorId: 'first', colorHex: '#00ff00' },
+      second: { colorId: 'second', colorHex: '#0000ff' },
+    },
+    [protectedMask]
+  );
   assert.notDeepEqual(Array.from(output.data.slice(0, 3)), [100, 100, 100]);
+  assert.notDeepEqual(Array.from(recoloured.data.slice(0, 3)), Array.from(output.data.slice(0, 3)));
   assert.deepEqual(Array.from(output.data.slice(4, 7)), [50, 50, 50]);
   assert.deepEqual(Array.from(output.data.slice(8, 11)), [20, 20, 20]);
+});
+
+test('benchmark reports overlap, boundary, protected leakage, and correction effort', () => {
+  const reference = Uint8Array.from([0, 255, 255, 0, 0, 0]);
+  const prediction = Uint8Array.from([0, 255, 255, 255, 0, 0]);
+  const protectedMask = Uint8Array.from([0, 0, 0, 255, 0, 0]);
+  const metrics = calculateMaskMetrics(prediction, reference, 3, 2, protectedMask, 1);
+  assert.equal(metrics.iou, 2 / 3);
+  assert.equal(metrics.precision, 2 / 3);
+  assert.equal(metrics.recall, 1);
+  assert.equal(metrics.protectedLeakagePixels, 1);
+  assert.equal(metrics.manualCorrectionPixels, 1);
+  assert.ok(metrics.boundaryF1 > 0);
 });
 
 test('snapshot copies remain independent for undo and redo', () => {

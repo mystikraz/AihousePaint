@@ -29,11 +29,16 @@ import {
   ArchitecturalLayer,
   LayerColourAssignment,
   MAX_WORKING_MASK_PIXELS,
+  RasterMask,
+  cloneMask,
+  createSelectionOverlayData,
   layersFromPreset,
-  paintMaskCircle,
+  mergeMasks,
+  paintMaskStrokeInPlace,
   renderProjectToCanvas,
+  subtractMask,
 } from '@/lib/architectural-layer-engine';
-import { FloodFillSegmentationProvider } from '@/lib/segmentation';
+import { WorkerEdgeAwareProvider } from '@/lib/segmentation';
 
 interface CanvasViewerProps {
   preset: ArchitecturalPreset;
@@ -79,6 +84,7 @@ export function CanvasViewer({
   const containerRef = useRef<HTMLDivElement>(null);
   const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const recolorCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const selectionOverlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const displayCanvasRef = useRef<HTMLCanvasElement>(null);
 
   const isCustomImage = !!customImageSrc;
@@ -90,23 +96,47 @@ export function CanvasViewer({
   const [hoveredZone, setHoveredZone] = useState<ArchitecturalZone | null>(null);
   const [sliderPosition, setSliderPosition] = useState(50); // 0 to 100 percentage
   const [isDraggingSlider, setIsDraggingSlider] = useState(false);
+  const [selectionMode, setSelectionMode] = useState<'select' | 'add' | 'remove' | 'brush-add' | 'brush-remove'>('select');
+  const [brushRadius, setBrushRadius] = useState(28);
+  const [isSegmenting, setIsSegmenting] = useState(false);
   const [clickNotification, setClickNotification] = useState<{
     text: string;
     xPct: number;
     yPct: number;
   } | null>(null);
-  const [isBrushMode, setIsBrushMode] = useState(false);
-  const [isBrushErase, setIsBrushErase] = useState(false);
-  const segmentationProvider = useRef(new FloodFillSegmentationProvider());
-  const protectedMaskRef = useRef<import('@/lib/architectural-layer-engine').RasterMask | null>(null);
+  const segmentationProvider = useRef(new WorkerEdgeAwareProvider(
+    () => new Worker(new URL('../lib/segmentation.worker.ts', import.meta.url), { type: 'module' })
+  ));
+  const protectedMaskRef = useRef<RasterMask | null>(null);
+  const brushStrokeRef = useRef<{
+    pointerId: number;
+    layerId: string;
+    mask: RasterMask;
+    lastX: number;
+    lastY: number;
+    value: 0 | 255;
+  } | null>(null);
+  const segmentationAbortRef = useRef<AbortController | null>(null);
+  const segmentationRequestIdRef = useRef(0);
+  const isBrushMode = selectionMode === 'brush-add' || selectionMode === 'brush-remove';
+
+  useEffect(() => () => segmentationProvider.current.dispose(), []);
 
   // Initialize source and buffer canvases when image source changes
   useEffect(() => {
+    segmentationAbortRef.current?.abort();
+    segmentationAbortRef.current = null;
+    segmentationRequestIdRef.current++;
+    segmentationProvider.current.dispose();
+    brushStrokeRef.current = null;
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.src = currentImageSource;
 
     img.onload = () => {
+      setIsSegmenting(false);
+      setSelectionMode('select');
+      setBrushRadius(28);
       const srcCanvas = document.createElement('canvas');
       const naturalWidth = img.naturalWidth || 1920;
       const naturalHeight = img.naturalHeight || 1080;
@@ -148,7 +178,21 @@ export function CanvasViewer({
           sourceCanvasRef.current.height
         );
     const assignments = isCustomImage
-      ? customColourAssignments
+      ? customLayers.reduce<Record<string, LayerColourAssignment>>((result, layer) => {
+          const assignment = customColourAssignments[layer.id];
+          if (assignment) {
+            result[layer.id] = assignment;
+          } else if (layer.selected && layer.assignedColorId === activeColor.code) {
+            // Keep the just-selected surface paintable while React state for the
+            // assignment catches up (and recover old saved layers without one).
+            result[layer.id] = {
+              colorId: activeColor.code,
+              colorHex: activeColor.hex,
+              colorCode: activeColor.code,
+            };
+          }
+          return result;
+        }, {})
       : Object.fromEntries(
           layers
             .filter((layer) => activeColors[layer.id])
@@ -215,9 +259,29 @@ export function CanvasViewer({
     } else {
       ctx.drawImage(recolorCanvasRef.current, 0, 0);
     }
+
+    if (isCustomImage && !isCompareMode) {
+      const selectedLayer = customLayers.find((layer) => layer.selected);
+      if (selectedLayer) {
+        const overlayCanvas = selectionOverlayCanvasRef.current ?? document.createElement('canvas');
+        if (overlayCanvas.width !== width || overlayCanvas.height !== height) {
+          overlayCanvas.width = width;
+          overlayCanvas.height = height;
+        }
+        selectionOverlayCanvasRef.current = overlayCanvas;
+        const overlayContext = overlayCanvas.getContext('2d');
+        if (!overlayContext) return;
+
+        const overlay = ctx.createImageData(width, height);
+        overlay.data.set(createSelectionOverlayData(selectedLayer.mask, protectedMaskRef.current ?? undefined));
+        overlayContext.putImageData(overlay, 0, 0);
+        ctx.drawImage(overlayCanvas, 0, 0);
+      }
+    }
   }, [
     imageLoaded,
     activeColors,
+    activeColor,
     hoveredZone,
     preset.zones,
     isCustomImage,
@@ -225,10 +289,12 @@ export function CanvasViewer({
     sliderPosition,
     customLayers,
     customColourAssignments,
+    selectionMode,
+    isBrushMode,
   ]);
 
   // Coordinate helper
-  const getCanvasCoords = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const getCanvasCoords = (e: { clientX: number; clientY: number }) => {
     const canvas = displayCanvasRef.current;
     if (!canvas) {
       return { xPct: 0, yPct: 0, pixelX: 0, pixelY: 0 };
@@ -272,9 +338,83 @@ export function CanvasViewer({
     setHoveredZone(null);
   };
 
+  const drawBrushFeedback = (x: number, y: number, value: 0 | 255) => {
+    const canvas = displayCanvasRef.current;
+    const context = canvas?.getContext('2d');
+    if (!canvas || !context) return;
+    context.save();
+    context.fillStyle = value === 255 ? 'rgba(20, 122, 130, 0.32)' : 'rgba(225, 29, 72, 0.32)';
+    context.beginPath();
+    context.arc(x, y, brushRadius, 0, Math.PI * 2);
+    context.fill();
+    context.restore();
+  };
+
+  const applyBrushPoint = (x: number, y: number, value: 0 | 255) => {
+    const stroke = brushStrokeRef.current;
+    if (!stroke) return;
+    const distance = Math.hypot(x - stroke.lastX, y - stroke.lastY);
+    const steps = Math.max(1, Math.ceil(distance / Math.max(1, brushRadius * 0.4)));
+    paintMaskStrokeInPlace(
+      stroke.mask,
+      stroke.lastX,
+      stroke.lastY,
+      x,
+      y,
+      brushRadius,
+      value,
+      protectedMaskRef.current ?? undefined
+    );
+    for (let step = 1; step <= steps; step++) {
+      const ratio = step / steps;
+      const pointX = stroke.lastX + (x - stroke.lastX) * ratio;
+      const pointY = stroke.lastY + (y - stroke.lastY) * ratio;
+      drawBrushFeedback(pointX, pointY, value);
+    }
+    stroke.lastX = x;
+    stroke.lastY = y;
+  };
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!isBrushMode || !isCustomImage || isCompareMode) return;
+    const selected = customLayers.find((layer) => layer.selected && !layer.locked);
+    if (!selected) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const { pixelX, pixelY } = getCanvasCoords(e);
+    const value = selectionMode === 'brush-remove' ? 0 : 255;
+    brushStrokeRef.current = {
+      pointerId: e.pointerId,
+      layerId: selected.id,
+      mask: cloneMask(selected.mask),
+      lastX: pixelX,
+      lastY: pixelY,
+      value,
+    };
+    applyBrushPoint(pixelX, pixelY, value);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const stroke = brushStrokeRef.current;
+    if (!stroke || stroke.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    const { pixelX, pixelY } = getCanvasCoords(e);
+    applyBrushPoint(pixelX, pixelY, stroke.value);
+  };
+
+  const finishBrushStroke = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const stroke = brushStrokeRef.current;
+    if (!stroke || stroke.pointerId !== e.pointerId) return;
+    brushStrokeRef.current = null;
+    const nextLayers = customLayers.map((layer) =>
+      layer.id === stroke.layerId ? { ...layer, mask: stroke.mask } : layer
+    );
+    onCustomPaint(nextLayers, customColourAssignments);
+  };
+
   // Click handler
-  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (isCompareMode) return;
+  const handleCanvasClick = async (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (isCompareMode || isBrushMode || isSegmenting) return;
     const { xPct, yPct, pixelX, pixelY } = getCanvasCoords(e);
 
     if (!isCustomImage) {
@@ -296,28 +436,67 @@ export function CanvasViewer({
         setTimeout(() => setClickNotification(null), 1800);
       }
     } else if (sourceCanvasRef.current) {
-      if (isBrushMode) {
-        const selected = customLayers.find((layer) => layer.selected && !layer.locked);
-        if (!selected) return;
+      const sourceCtx = sourceCanvasRef.current.getContext('2d', { willReadFrequently: true });
+      if (!sourceCtx) return;
+      segmentationAbortRef.current?.abort();
+      const controller = new AbortController();
+      segmentationAbortRef.current = controller;
+      const requestId = ++segmentationRequestIdRef.current;
+      setIsSegmenting(true);
+      let result;
+      try {
+        result = await segmentationProvider.current.segmentAtPoint({
+          sourceContext: sourceCtx,
+          x: pixelX,
+          y: pixelY,
+          positivePoints: [{ x: pixelX, y: pixelY }],
+          protectedMask: protectedMaskRef.current ?? undefined,
+          signal: controller.signal,
+          // Keep the click local to one architectural surface. A looser fill
+          // crosses similarly coloured walls, roofs, and trim in house photos.
+          tolerance: 20,
+          edgeThreshold: 14,
+          protectedPredicate: isProtectedNonWallPixel,
+        });
+      } catch (error) {
+        if (requestId === segmentationRequestIdRef.current && !controller.signal.aborted) {
+          const message = error instanceof Error ? error.message : 'Surface selection failed.';
+          setClickNotification({ text: message, xPct, yPct });
+          setTimeout(() => setClickNotification(null), 3000);
+        }
+        return;
+      } finally {
+        if (requestId === segmentationRequestIdRef.current) setIsSegmenting(false);
+      }
+      if (requestId !== segmentationRequestIdRef.current || controller.signal.aborted) return;
+      const mask = result.mask;
+      if (!mask.data.some(Boolean)) return;
+      const selected = customLayers.find((layer) => layer.selected && !layer.locked);
+      if (selectionMode === 'add' || selectionMode === 'remove') {
+        if (!selected) {
+          setClickNotification({ text: 'Select an unlocked layer first', xPct, yPct });
+          setTimeout(() => setClickNotification(null), 1800);
+          return;
+        }
         const nextLayers = customLayers.map((layer) =>
           layer.id === selected.id
-            ? { ...layer, mask: paintMaskCircle(layer.mask, pixelX, pixelY, 28, isBrushErase ? 0 : 255, protectedMaskRef.current ?? undefined) }
+            ? {
+                ...layer,
+                mask: selectionMode === 'add'
+                  ? mergeMasks(layer.mask, mask)
+                  : subtractMask(layer.mask, mask),
+              }
             : layer
         );
         onCustomPaint(nextLayers, customColourAssignments);
+        setClickNotification({
+          text: selectionMode === 'add' ? `Added area to ${selected.name}` : `Removed area from ${selected.name}`,
+          xPct,
+          yPct,
+        });
+        setTimeout(() => setClickNotification(null), 1800);
         return;
       }
-
-      const sourceCtx = sourceCanvasRef.current.getContext('2d', { willReadFrequently: true });
-      if (!sourceCtx) return;
-      const mask = segmentationProvider.current.segmentAtPoint({
-        sourceContext: sourceCtx,
-        x: pixelX,
-        y: pixelY,
-        tolerance: 32,
-        protectedPredicate: isProtectedNonWallPixel,
-      });
-      if (!mask.data.some(Boolean)) return;
       const layerId = `manual-${Date.now()}`;
       const nextLayer: ArchitecturalLayer = {
         id: layerId,
@@ -343,7 +522,20 @@ export function CanvasViewer({
           colorCode: activeColor.code,
         },
       });
-      setClickNotification({ text: `Selected surface with ${activeColor.code}`, xPct, yPct });
+      const paintStatus = `Paint applied to ${nextLayer.name} with ${activeColor.code} ${activeColor.name}`;
+      setClickNotification({
+        text: result.warning
+          ? `${paintStatus}; ${result.warning}`
+          : `${paintStatus} (${result.method}${
+              result.latencyMs === undefined ? '' : `, ${result.latencyMs} ms total`
+            }${
+              result.processingLatencyMs === undefined
+                ? ''
+                : `, ${result.processingLatencyMs} ms worker processing`
+            })`,
+        xPct,
+        yPct,
+      });
       setTimeout(() => setClickNotification(null), 1800);
     }
   };
@@ -398,12 +590,19 @@ export function CanvasViewer({
             <canvas
               ref={displayCanvasRef}
               onClick={handleCanvasClick}
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={finishBrushStroke}
+              onPointerCancel={finishBrushStroke}
               onMouseMove={handleMouseMove}
               onMouseLeave={handleMouseLeave}
+              style={{ touchAction: isBrushMode ? 'none' : undefined }}
               className={`w-full h-full object-contain ${
                 isCompareMode
                   ? 'cursor-ew-resize'
-                  : 'cursor-crosshair hover:brightness-102'
+                  : isBrushMode
+                    ? 'cursor-cell'
+                    : 'cursor-crosshair hover:brightness-102'
               }`}
             />
           </div>
@@ -441,7 +640,18 @@ export function CanvasViewer({
         </div>
 
         {/* Hover Feedback Badge (Top Left) */}
-        {hoveredZone && !isCompareMode && (
+        {isCustomImage && !isCompareMode && customLayers.some((layer) => layer.selected) ? (
+          <div
+            role="status"
+            aria-live="polite"
+            className="absolute top-3 left-3 max-w-[70%] truncate bg-white/95 text-slate-800 text-xs px-3 py-1.5 rounded-lg shadow-sm border border-slate-200 z-20 flex items-center gap-2 pointer-events-none"
+          >
+            <span className="w-2.5 h-2.5 rounded-sm border border-amber-900 bg-amber-400/80 shrink-0" />
+            <span className="truncate">
+              Selected area · {customLayers.find((layer) => layer.selected)?.name}
+            </span>
+          </div>
+        ) : hoveredZone && !isCompareMode ? (
           <div className="absolute top-3 left-3 bg-slate-900/85 backdrop-blur-md text-white text-xs px-3 py-1.5 rounded-lg shadow-md border border-white/10 z-20 flex items-center gap-2 pointer-events-none transition-all">
             <span className="w-2 h-2 rounded-full bg-[#147a82] animate-pulse" />
             <span className="font-medium">{hoveredZone.name}</span>
@@ -449,7 +659,7 @@ export function CanvasViewer({
               (Tap to paint {activeColor.code})
             </span>
           </div>
-        )}
+        ) : null}
 
         {/* Interactive Before/After Split Slider Handle */}
         {isCompareMode && (
@@ -537,32 +747,73 @@ export function CanvasViewer({
           {isCustomImage && (
             <>
               <div className="h-4 w-px bg-slate-200 mx-1" />
+              <span className="text-[11px] font-semibold text-slate-500">Selection:</span>
+              {isSegmenting && (
+                <span role="status" className="text-[11px] font-medium text-[#147a82]">
+                  Selecting surface…
+                </span>
+              )}
+              {([
+                ['select', 'Select surface'],
+                ['add', 'Add area'],
+                ['remove', 'Remove area'],
+              ] as const).map(([mode, label]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setSelectionMode(mode)}
+                  disabled={mode !== 'select' && !customLayers.some((layer) => layer.selected && !layer.locked)}
+                  className={`text-xs font-medium px-2.5 py-1.5 rounded-lg border transition-colors ${
+                    selectionMode === mode
+                      ? 'bg-[#147a82]/10 text-[#147a82] border-[#147a82]'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed'
+                  }`}
+                  aria-pressed={selectionMode === mode}
+                >
+                  {label}
+                </button>
+              ))}
               <button
                 type="button"
-                onClick={() => {
-                  setIsBrushMode((enabled) => !enabled);
-                  setIsBrushErase(false);
-                }}
-                className={`text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors ${
-                  isBrushMode
+                onClick={() => setSelectionMode(selectionMode === 'brush-add' ? 'select' : 'brush-add')}
+                disabled={!customLayers.some((layer) => layer.selected && !layer.locked)}
+                className={`text-xs font-medium px-2.5 py-1.5 rounded-lg border transition-colors ${
+                  selectionMode === 'brush-add'
                     ? 'bg-[#147a82]/10 text-[#147a82] border-[#147a82]'
-                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed'
                 }`}
+                aria-pressed={selectionMode === 'brush-add'}
               >
-                {isBrushMode ? 'Brush on' : 'Refine mask'}
+                Brush add
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectionMode(selectionMode === 'brush-remove' ? 'select' : 'brush-remove')}
+                disabled={!customLayers.some((layer) => layer.selected && !layer.locked)}
+                className={`text-xs font-medium px-2.5 py-1.5 rounded-lg border transition-colors ${
+                  selectionMode === 'brush-remove'
+                    ? 'bg-rose-50 text-rose-700 border-rose-200'
+                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed'
+                }`}
+                aria-pressed={selectionMode === 'brush-remove'}
+              >
+                Brush erase
               </button>
               {isBrushMode && (
-                <button
-                  type="button"
-                  onClick={() => setIsBrushErase((erasing) => !erasing)}
-                  className={`text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors ${
-                    isBrushErase
-                      ? 'bg-rose-50 text-rose-700 border-rose-200'
-                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                  }`}
-                >
-                  {isBrushErase ? 'Erase' : 'Add'}
-                </button>
+                <label className="flex items-center gap-1.5 text-xs text-slate-600">
+                  Size
+                  <input
+                    type="range"
+                    min="8"
+                    max="96"
+                    step="4"
+                    value={brushRadius}
+                    onChange={(event) => setBrushRadius(Number(event.target.value))}
+                    aria-label="Brush size"
+                    className="w-20 accent-[#147a82]"
+                  />
+                  <span className="w-6 text-right tabular-nums">{brushRadius}</span>
+                </label>
               )}
             </>
           )}

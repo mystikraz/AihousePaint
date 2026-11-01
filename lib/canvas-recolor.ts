@@ -41,8 +41,17 @@ export function isPointInZone(xPercent: number, yPercent: number, zone: Architec
 export function isProtectedNonWallPixel(r: number, g: number, b: number, yRatio: number): boolean {
   if (r < 24 && g < 24 && b < 24) return true;
   if (g > 48 && g > r * 1.15 && g > b * 1.1) return true;
-  if (r > 95 && r < 190 && g > 45 && g < 125 && b < 70 && r > g * 1.3) return true;
-  return yRatio < 0.22 && b > 140 && b > r * 1.3 && b > g * 1.15;
+
+  // Sky can occupy much more than the top strip in a portrait house photo.
+  // Keep blue and bright cloud-like pixels in the upper half out of paintable
+  // surface masks, while leaving brown brick and warm wall colours eligible.
+  const brightness = (r + g + b) / 3;
+  const spread = Math.max(r, g, b) - Math.min(r, g, b);
+  const upperSky = yRatio < 0.5 && (
+    (b > 110 && b > r * 1.08 && b > g * 1.02) ||
+    (brightness > 175 && spread < 34)
+  );
+  return upperSky;
 }
 
 export function createHeuristicProtectedMask(sourceCanvas: HTMLCanvasElement): RasterMask {

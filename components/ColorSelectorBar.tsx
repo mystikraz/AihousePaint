@@ -7,6 +7,7 @@ import { BihaniColor } from '@/lib/bihani-colors';
 
 interface ColorSelectorBarProps {
   activeColor: BihaniColor;
+  selectedSurfaceName?: string;
   onOpenPaletteModal: () => void;
   originalImageSrc: string;
   onToggleGlanceOriginal: () => void;
@@ -25,6 +26,7 @@ function isLightColor(hex: string): boolean {
 
 export function ColorSelectorBar({
   activeColor,
+  selectedSurfaceName,
   onOpenPaletteModal,
   originalImageSrc,
   onToggleGlanceOriginal,
@@ -43,7 +45,9 @@ export function ColorSelectorBar({
         onClick={onOpenPaletteModal}
         className={`md:col-span-2 relative group flex items-center justify-between p-4 rounded-xl shadow-xs transition-all duration-150 border ${borderColor} hover:shadow-md hover:scale-[1.008] min-h-[72px] text-left overflow-hidden`}
         style={{ backgroundColor: activeColor.hex }}
-        aria-label={`Select Color. Currently active: ${activeColor.code} ${activeColor.name}`}
+        aria-label={`Select Color. Currently active: ${activeColor.code} ${activeColor.name}${
+          selectedSurfaceName ? `; applies to ${selectedSurfaceName}` : ''
+        }`}
       >
         {/* Subtle background glow */}
         <div className="absolute inset-0 bg-gradient-to-r from-black/10 to-transparent pointer-events-none" />
@@ -58,7 +62,9 @@ export function ColorSelectorBar({
           </div>
           <div>
             <div className={`text-[11px] uppercase tracking-wider font-semibold ${subtitleColor}`}>
-              Active Paint Shade (Tap to Select Color)
+              {selectedSurfaceName
+                ? `Selected surface: ${selectedSurfaceName} · choose a shade to recolor`
+                : 'Active Paint Shade (Tap to Select Color)'}
             </div>
             <div className="flex items-center gap-2 mt-0.5">
               <span className={`text-xl sm:text-2xl font-black font-mono tracking-tight ${textColor}`}>

@@ -59,6 +59,8 @@ export interface HouseProject {
 
 export interface FloodFillOptions {
   tolerance?: number;
+  edgeThreshold?: number;
+  maxSeedColorDifference?: number;
   protectedPredicate?: (r: number, g: number, b: number, yRatio: number) => boolean;
 }
 
@@ -73,6 +75,58 @@ export function createEmptyMask(width: number, height: number): RasterMask {
     throw new RangeError(`Mask dimensions exceed the ${MAX_WORKING_MASK_PIXELS.toLocaleString()} pixel working limit.`);
   }
   return { width, height, data: new Uint8Array(width * height) };
+}
+
+export function createSelectionOverlayData(
+  mask: RasterMask,
+  protectedMask?: RasterMask
+): Uint8ClampedArray {
+  const pixelCount = mask.width * mask.height;
+  if (mask.data.length !== pixelCount) {
+    throw new RangeError('Cannot highlight a malformed architectural mask.');
+  }
+  if (
+    protectedMask &&
+    (
+      protectedMask.width !== mask.width ||
+      protectedMask.height !== mask.height ||
+      protectedMask.data.length !== pixelCount
+    )
+  ) {
+    throw new RangeError('Protected mask dimensions do not match the selected area.');
+  }
+
+  const overlay = new Uint8ClampedArray(pixelCount * 4);
+  const isSelected = (pixel: number) =>
+    mask.data[pixel] !== 0 && !protectedMask?.data[pixel];
+
+  for (let pixel = 0; pixel < pixelCount; pixel++) {
+    const x = pixel % mask.width;
+    const y = Math.floor(pixel / mask.width);
+    const selected = isSelected(pixel);
+    const hasUnselectedNeighbour =
+      (x === 0 || !isSelected(pixel - 1)) ||
+      (x === mask.width - 1 || !isSelected(pixel + 1)) ||
+      (y === 0 || !isSelected(pixel - mask.width)) ||
+      (y === mask.height - 1 || !isSelected(pixel + mask.width));
+
+    if (selected) {
+      const index = pixel * 4;
+      if (hasUnselectedNeighbour) {
+        overlay[index] = 15;
+        overlay[index + 1] = 23;
+        overlay[index + 2] = 42;
+        overlay[index + 3] = 180;
+      } else {
+        overlay[index] = 255;
+        overlay[index + 1] = 191;
+        overlay[index + 2] = 71;
+        overlay[index + 3] = 20;
+      }
+    }
+  }
+
+  return overlay;
 }
 
 export function cloneMask(mask: RasterMask): RasterMask {
@@ -221,15 +275,45 @@ export function combineMasks(masks: RasterMask[]): RasterMask | null {
   return result;
 }
 
-export function paintMaskCircle(
+export function mergeMasks(first: RasterMask, second: RasterMask): RasterMask {
+  if (first.width !== second.width || first.height !== second.height) {
+    throw new RangeError('Cannot merge architectural masks with different dimensions.');
+  }
+  const result = cloneMask(first);
+  for (let pixel = 0; pixel < result.data.length; pixel++) {
+    result.data[pixel] = Math.max(result.data[pixel], second.data[pixel]);
+  }
+  return result;
+}
+
+export function mergeMasksInPlace(target: RasterMask, source: RasterMask): void {
+  if (target.width !== source.width || target.height !== source.height) {
+    throw new RangeError('Cannot merge architectural masks with different dimensions.');
+  }
+  for (let pixel = 0; pixel < target.data.length; pixel++) {
+    target.data[pixel] = Math.max(target.data[pixel], source.data[pixel]);
+  }
+}
+
+export function subtractMask(source: RasterMask, removed: RasterMask): RasterMask {
+  if (source.width !== removed.width || source.height !== removed.height) {
+    throw new RangeError('Cannot subtract architectural masks with different dimensions.');
+  }
+  const result = cloneMask(source);
+  for (let pixel = 0; pixel < result.data.length; pixel++) {
+    if (removed.data[pixel]) result.data[pixel] = 0;
+  }
+  return result;
+}
+
+export function paintMaskCircleInPlace(
   mask: RasterMask,
   centerX: number,
   centerY: number,
   radius: number,
   value = 255,
   protectedMask?: RasterMask
-): RasterMask {
-  const next = cloneMask(mask);
+): void {
   const minX = Math.max(0, Math.floor(centerX - radius));
   const maxX = Math.min(mask.width - 1, Math.ceil(centerX + radius));
   const minY = Math.max(0, Math.floor(centerY - radius));
@@ -241,11 +325,267 @@ export function paintMaskCircle(
       const dy = y - centerY;
       const pixel = y * mask.width + x;
       if (dx * dx + dy * dy <= radiusSquared && !protectedMask?.data[pixel]) {
-        next.data[pixel] = value;
+        mask.data[pixel] = value;
       }
     }
   }
+}
+
+export function paintMaskStrokeInPlace(
+  mask: RasterMask,
+  startX: number,
+  startY: number,
+  endX: number,
+  endY: number,
+  radius: number,
+  value = 255,
+  protectedMask?: RasterMask
+): void {
+  const distance = Math.hypot(endX - startX, endY - startY);
+  const steps = Math.max(1, Math.ceil(distance / Math.max(1, radius * 0.4)));
+  for (let step = 1; step <= steps; step++) {
+    const ratio = step / steps;
+    paintMaskCircleInPlace(
+      mask,
+      startX + (endX - startX) * ratio,
+      startY + (endY - startY) * ratio,
+      radius,
+      value,
+      protectedMask
+    );
+  }
+}
+
+export function paintMaskCircle(
+  mask: RasterMask,
+  centerX: number,
+  centerY: number,
+  radius: number,
+  value = 255,
+  protectedMask?: RasterMask
+): RasterMask {
+  const next = cloneMask(mask);
+  paintMaskCircleInPlace(next, centerX, centerY, radius, value, protectedMask);
   return next;
+}
+
+function srgbToLinear(value: number): number {
+  const normalized = value / 255;
+  return normalized <= 0.04045
+    ? normalized / 12.92
+    : ((normalized + 0.055) / 1.055) ** 2.4;
+}
+
+function rgbToLab(r: number, g: number, b: number): [number, number, number] {
+  const red = srgbToLinear(r);
+  const green = srgbToLinear(g);
+  const blue = srgbToLinear(b);
+  const x = (red * 0.4124564 + green * 0.3575761 + blue * 0.1804375) / 0.95047;
+  const y = red * 0.2126729 + green * 0.7151522 + blue * 0.072175;
+  const z = (red * 0.0193339 + green * 0.119192 + blue * 0.9503041) / 1.08883;
+  const transform = (value: number) => value > 0.008856
+    ? Math.cbrt(value)
+    : 7.787 * value + 16 / 116;
+  const fx = transform(x);
+  const fy = transform(y);
+  const fz = transform(z);
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+}
+
+export function prepareLabImage(
+  width: number,
+  height: number,
+  source: Uint8ClampedArray
+): Float32Array {
+  if (source.length !== width * height * 4) {
+    throw new RangeError('Cannot prepare a malformed source image for segmentation.');
+  }
+  const lab = new Float32Array(width * height * 3);
+  for (let pixel = 0; pixel < width * height; pixel++) {
+    const index = pixel * 4;
+    const [l, a, b] = rgbToLab(source[index], source[index + 1], source[index + 2]);
+    const labIndex = pixel * 3;
+    lab[labIndex] = l;
+    lab[labIndex + 1] = a;
+    lab[labIndex + 2] = b;
+  }
+  return lab;
+}
+
+function* floodFillPreparedSteps(
+  width: number,
+  height: number,
+  source: Uint8ClampedArray,
+  lab: Float32Array,
+  startX: number,
+  startY: number,
+  options: FloodFillOptions,
+  protectedMask?: Uint8Array
+): Generator<void, RasterMask, void> {
+  const mask = createEmptyMask(width, height);
+  if (
+    source.length !== width * height * 4 ||
+    lab.length !== width * height * 3 ||
+    (protectedMask && protectedMask.length !== width * height)
+  ) {
+    throw new RangeError('Segmentation inputs have incompatible dimensions.');
+  }
+  if (startX < 0 || startX >= width || startY < 0 || startY >= height) return mask;
+
+  const visited = new Uint8Array(width * height);
+  const queue = new Int32Array(width * height);
+  let head = 0;
+  let tail = 0;
+  let processed = 0;
+  const tolerance = Math.max(0, options.tolerance ?? 32);
+  const edgeThresholdSquared =
+    Math.max(0, options.edgeThreshold ?? Math.max(12, tolerance * 0.75)) ** 2;
+  const maxSeedColorDifferenceSquared =
+    Math.max(0, options.maxSeedColorDifference ?? tolerance * 4) ** 2;
+  const startIndex = (startY * width + startX) * 4;
+  const startR = source[startIndex];
+  const startG = source[startIndex + 1];
+  const startB = source[startIndex + 2];
+  const seedPixel = startY * width + startX;
+  if (
+    protectedMask?.[seedPixel] ||
+    options.protectedPredicate?.(startR, startG, startB, startY / height)
+  ) return mask;
+
+  const seedLabIndex = seedPixel * 3;
+  const startL = lab[seedLabIndex];
+  const startA = lab[seedLabIndex + 1];
+  const startLabB = lab[seedLabIndex + 2];
+
+  queue[tail++] = seedPixel;
+  visited[seedPixel] = 1;
+
+  while (head < tail) {
+    const pixel = queue[head++];
+    const x = pixel % width;
+    const y = Math.floor(pixel / width);
+    processed++;
+    mask.data[pixel] = 255;
+
+    const neighbours = [
+      pixel + 1,
+      pixel - 1,
+      pixel + width,
+      pixel - width,
+    ];
+    for (let direction = 0; direction < neighbours.length; direction++) {
+      const nextPixel = neighbours[direction];
+      if (
+        (direction === 0 && x === width - 1) ||
+        (direction === 1 && x === 0) ||
+        (direction === 2 && y === height - 1) ||
+        (direction === 3 && y === 0)
+      ) continue;
+      if (visited[nextPixel]) continue;
+      const nextY = Math.floor(nextPixel / width);
+      const nextIndex = nextPixel * 4;
+      if (
+        protectedMask?.[nextPixel] ||
+        options.protectedPredicate?.(
+          source[nextIndex],
+          source[nextIndex + 1],
+          source[nextIndex + 2],
+          nextY / height
+        )
+      ) {
+        visited[nextPixel] = 1;
+        continue;
+      }
+
+      const nextLabIndex = nextPixel * 3;
+      const nextL = lab[nextLabIndex];
+      const nextA = lab[nextLabIndex + 1];
+      const nextB = lab[nextLabIndex + 2];
+      const seedDL = nextL - startL;
+      const seedDA = nextA - startA;
+      const seedDB = nextB - startLabB;
+      const neighborL = nextL - lab[pixel * 3];
+      const neighborA = nextA - lab[pixel * 3 + 1];
+      const neighborB = nextB - lab[pixel * 3 + 2];
+      const seedDiffSquared = seedDL ** 2 + seedDA ** 2 + seedDB ** 2;
+      const neighborDiffSquared = neighborL ** 2 + neighborA ** 2 + neighborB ** 2;
+      if (
+        seedDiffSquared <= maxSeedColorDifferenceSquared &&
+        neighborDiffSquared <= edgeThresholdSquared &&
+        tail < queue.length
+      ) {
+        visited[nextPixel] = 1;
+        queue[tail++] = nextPixel;
+      }
+    }
+    if (processed % 8192 === 0) yield;
+  }
+
+  return mask;
+}
+
+export function floodFillMaskFromPreparedImage(
+  width: number,
+  height: number,
+  source: Uint8ClampedArray,
+  lab: Float32Array,
+  startX: number,
+  startY: number,
+  options: FloodFillOptions = {},
+  protectedMask?: Uint8Array
+): RasterMask {
+  const steps = floodFillPreparedSteps(
+    width,
+    height,
+    source,
+    lab,
+    startX,
+    startY,
+    options,
+    protectedMask
+  );
+  let step = steps.next();
+  while (!step.done) step = steps.next();
+  return step.value;
+}
+
+export async function floodFillMaskFromPreparedImageAsync(
+  width: number,
+  height: number,
+  source: Uint8ClampedArray,
+  lab: Float32Array,
+  startX: number,
+  startY: number,
+  options: FloodFillOptions = {},
+  protectedMask?: Uint8Array,
+  signal?: Pick<AbortSignal, 'aborted'>
+): Promise<RasterMask> {
+  const steps = floodFillPreparedSteps(
+    width,
+    height,
+    source,
+    lab,
+    startX,
+    startY,
+    options,
+    protectedMask
+  );
+  let step = steps.next();
+  while (!step.done) {
+    if (signal?.aborted) {
+      const error = new Error('Segmentation request was cancelled.');
+      error.name = 'AbortError';
+      throw error;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    step = steps.next();
+  }
+  if (signal?.aborted) {
+    const error = new Error('Segmentation request was cancelled.');
+    error.name = 'AbortError';
+    throw error;
+  }
+  return step.value;
 }
 
 export function floodFillMask(
@@ -256,66 +596,34 @@ export function floodFillMask(
 ): RasterMask {
   const width = sourceCtx.canvas.width;
   const height = sourceCtx.canvas.height;
-  const mask = createEmptyMask(width, height);
-  if (startX < 0 || startX >= width || startY < 0 || startY >= height) return mask;
-
-  const image = sourceCtx.getImageData(0, 0, width, height);
-  const source = image.data;
-  const visited = new Uint8Array(width * height);
-  const queueX = new Int32Array(width * height);
-  const queueY = new Int32Array(width * height);
-  let head = 0;
-  let tail = 0;
-  const tolerance = options.tolerance ?? 32;
-  const startIndex = (startY * width + startX) * 4;
-  const startR = source[startIndex];
-  const startG = source[startIndex + 1];
-  const startB = source[startIndex + 2];
-
-  queueX[tail] = startX;
-  queueY[tail] = startY;
-  tail++;
-  visited[startY * width + startX] = 1;
-
-  while (head < tail) {
-    const x = queueX[head];
-    const y = queueY[head];
-    head++;
-    const pixel = y * width + x;
-    const index = pixel * 4;
-    const r = source[index];
-    const g = source[index + 1];
-    const b = source[index + 2];
-    const isProtected = options.protectedPredicate?.(r, g, b, y / height) ?? false;
-
-    if (!isProtected) mask.data[pixel] = 255;
-
-    const neighbours = [
-      [x + 1, y],
-      [x - 1, y],
-      [x, y + 1],
-      [x, y - 1],
-    ];
-    for (const [nextX, nextY] of neighbours) {
-      if (nextX < 0 || nextX >= width || nextY < 0 || nextY >= height) continue;
-      const nextPixel = nextY * width + nextX;
-      if (visited[nextPixel]) continue;
-      visited[nextPixel] = 1;
-      const nextIndex = nextPixel * 4;
-      const diff = Math.sqrt(
-        (source[nextIndex] - startR) ** 2 +
-          (source[nextIndex + 1] - startG) ** 2 +
-          (source[nextIndex + 2] - startB) ** 2
-      );
-      if (diff <= tolerance && tail < queueX.length) {
-        queueX[tail] = nextX;
-        queueY[tail] = nextY;
-        tail++;
+  const source = sourceCtx.getImageData(0, 0, width, height).data;
+  const lab = prepareLabImage(width, height, source);
+  const protectedMask = options.protectedPredicate
+    ? new Uint8Array(width * height)
+    : undefined;
+  if (protectedMask) {
+    for (let pixel = 0; pixel < protectedMask.length; pixel++) {
+      const index = pixel * 4;
+      if (options.protectedPredicate?.(
+        source[index],
+        source[index + 1],
+        source[index + 2],
+        Math.floor(pixel / width) / height
+      )) {
+        protectedMask[pixel] = 255;
       }
     }
   }
-
-  return mask;
+  return floodFillMaskFromPreparedImage(
+    width,
+    height,
+    source,
+    lab,
+    startX,
+    startY,
+    { ...options, protectedPredicate: undefined },
+    protectedMask
+  );
 }
 
 export function blendPaintColor(

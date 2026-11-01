@@ -298,6 +298,34 @@ export default function BihaniVisualizerPage() {
     setCustomColourAssignments({ ...nextAssignments });
   };
 
+  const handleSelectColor = (color: BihaniColor) => {
+    setActiveColor(color);
+    const selectedLayer = customLayers.find((layer) => layer.selected);
+    if (!customImageSrc || !selectedLayer) return;
+
+    const currentAssignment = customColourAssignments[selectedLayer.id];
+    if (
+      currentAssignment?.colorId === color.code &&
+      currentAssignment.colorHex.toLowerCase() === color.hex.toLowerCase()
+    ) return;
+
+    handleCustomPaint(
+      customLayers.map((layer) =>
+        layer.id === selectedLayer.id
+          ? { ...layer, assignedColorId: color.code }
+          : layer
+      ),
+      {
+        ...customColourAssignments,
+        [selectedLayer.id]: {
+          colorId: color.code,
+          colorHex: color.hex,
+          colorCode: color.code,
+        },
+      }
+    );
+  };
+
   // Glance original photo toggle
   const handleToggleGlanceOriginal = () => {
     setIsGlancingOriginal((prev) => !prev);
@@ -372,7 +400,15 @@ export default function BihaniVisualizerPage() {
   };
 
   // List of unique codes applied so far
-  const appliedCodes = Object.values(colorCodesMap);
+  const appliedCodes = [
+    ...Object.values(colorCodesMap),
+    ...Object.values(customColourAssignments).map(
+      (assignment) => assignment.colorCode ?? assignment.colorId
+    ),
+  ];
+  const selectedSurfaceName = customImageSrc
+    ? customLayers.find((layer) => layer.selected)?.name
+    : undefined;
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col text-slate-800">
@@ -432,6 +468,7 @@ export default function BihaniVisualizerPage() {
         {/* Color Selector Bar (Side-by-Side Cards beneath canvas) */}
         <ColorSelectorBar
           activeColor={activeColor}
+          selectedSurfaceName={selectedSurfaceName}
           onOpenPaletteModal={() => setIsPaletteModalOpen(true)}
           originalImageSrc={customImageSrc || activePreset.imageSrc}
           onToggleGlanceOriginal={handleToggleGlanceOriginal}
@@ -442,7 +479,7 @@ export default function BihaniVisualizerPage() {
         <UsedColorsBar
           usedColorCodes={appliedCodes}
           activeColor={activeColor}
-          onSelectColor={(col) => setActiveColor(col)}
+          onSelectColor={handleSelectColor}
         />
 
         {/* Customer Details & Dealer Job Sheet Card */}
@@ -465,7 +502,7 @@ export default function BihaniVisualizerPage() {
         isOpen={isPaletteModalOpen}
         onClose={() => setIsPaletteModalOpen(false)}
         activeColor={activeColor}
-        onSelectColor={(col) => setActiveColor(col)}
+        onSelectColor={handleSelectColor}
       />
 
       <EditCustomerModal

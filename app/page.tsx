@@ -208,6 +208,7 @@ export default function BihaniVisualizerPage() {
       })
         .then(async (response) => {
           const payload = await response.json().catch(() => ({}));
+          if (decompositionController.signal.aborted) return;
           if (!response.ok) throw new Error(payload.error || 'Automatic decomposition failed.');
           if (payload.imageWidth !== width || payload.imageHeight !== height) {
             throw new Error('Automatic decomposition returned mismatched image dimensions.');
@@ -501,9 +502,13 @@ export default function BihaniVisualizerPage() {
           </p>
         )}
         {customImageSrc && decompositionStatus === 'processing' && (
-          <p role="status" className="mb-3 rounded-lg bg-[#147a82]/10 px-3 py-2 text-xs font-medium text-[#0f4f56]">
-            Analysing architectural surfaces… You can continue manually if this takes too long.
-          </p>
+          <div role="status" aria-live="polite" className="mb-3 flex items-center gap-3 rounded-lg bg-[#147a82]/10 px-3 py-3 text-xs text-[#0f4f56]">
+            <span aria-hidden="true" className="h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-[#147a82]/25 border-t-[#147a82] motion-reduce:animate-none" />
+            <div>
+              <p className="font-semibold">Analysing architectural surfaces…</p>
+              <p className="mt-0.5">Waiting for the analysis. Drawing an area cancels it so you can continue manually.</p>
+            </div>
+          </div>
         )}
         {customImageSrc && decompositionStatus === 'ready' && (
           <p role="status" className="mb-3 rounded-lg bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800">

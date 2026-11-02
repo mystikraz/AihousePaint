@@ -34,7 +34,6 @@ import {
   combineMasks,
   createSelectionOverlayData,
   createRectangleMask,
-  fillSmallMaskHoles,
   layersFromPreset,
   mergeMasks,
   paintMaskStrokeInPlace,
@@ -101,7 +100,7 @@ export function CanvasViewer({
   const [hoveredZone, setHoveredZone] = useState<ArchitecturalZone | null>(null);
   const [sliderPosition, setSliderPosition] = useState(50); // 0 to 100 percentage
   const [isDraggingSlider, setIsDraggingSlider] = useState(false);
-  const [selectionMode, setSelectionMode] = useState<'select' | 'rectangle' | 'add' | 'remove' | 'brush-add' | 'brush-remove'>('select');
+  const [selectionMode, setSelectionMode] = useState<'rectangle' | 'add' | 'remove' | 'brush-add' | 'brush-remove'>('rectangle');
   const [brushRadius, setBrushRadius] = useState(28);
   const [manualSurfaceName, setManualSurfaceName] = useState('Pillar');
   const [isSegmenting, setIsSegmenting] = useState(false);
@@ -152,7 +151,7 @@ export function CanvasViewer({
 
     img.onload = () => {
       setIsSegmenting(false);
-      setSelectionMode('select');
+      setSelectionMode('rectangle');
       setRectangleDraft(null);
       setBrushRadius(28);
       const srcCanvas = document.createElement('canvas');
@@ -515,7 +514,7 @@ export function CanvasViewer({
 
   // Click handler
   const handleCanvasClick = async (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (isCompareMode || isBrushMode || isRectangleMode || isSegmenting) return;
+    if (isCompareMode || (isCustomImage && (isBrushMode || isRectangleMode || isSegmenting))) return;
     const { xPct, yPct, pixelX, pixelY } = getCanvasCoords(e);
 
     if (!isCustomImage) {
@@ -854,46 +853,19 @@ export function CanvasViewer({
                 <input value={manualSurfaceName} onChange={(event) => setManualSurfaceName(event.target.value)} maxLength={40}
                   aria-label="New area name" className="w-24 rounded-lg border border-slate-200 px-2 py-1.5 text-slate-700" />
               </label>
-              <button
-                type="button"
-                disabled={!customLayers.some((layer) => layer.selected && !layer.locked)}
-                onClick={() => onCustomPaint(customLayers.map((layer) => layer.selected && !layer.locked
-                  ? { ...layer, mask: fillSmallMaskHoles(layer.mask, getEffectiveProtectedMask() ?? undefined) }
-                  : layer), customColourAssignments)}
-                className="text-xs font-medium px-2.5 py-1.5 rounded-lg border bg-white text-slate-700 border-slate-200 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
-                title="Fill small enclosed gaps in the selected area; protected areas remain unchanged"
-              >
-                Fill small gaps
-              </button>
               {isSegmenting && (
                 <span role="status" className="text-[11px] font-medium text-[#147a82]">
                   Selecting surface…
                 </span>
               )}
-              {([
-                ['select', 'Select surface'],
-                ['rectangle', 'Draw area'],
-                ['add', 'Add area'],
-                ['remove', 'Remove area'],
-              ] as const).map(([mode, label]) => (
-                <button
-                  key={mode}
-                  type="button"
-                  onClick={() => setSelectionMode(mode)}
-                  disabled={(mode === 'add' || mode === 'remove') && !customLayers.some((layer) => layer.selected && !layer.locked)}
-                  className={`text-xs font-medium px-2.5 py-1.5 rounded-lg border transition-colors ${
-                    selectionMode === mode
-                      ? 'bg-[#147a82]/10 text-[#147a82] border-[#147a82]'
-                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed'
-                  }`}
-                  aria-pressed={selectionMode === mode}
-                >
-                  {label}
-                </button>
-              ))}
+              <button type="button" onClick={() => setSelectionMode('rectangle')}
+                className={`text-xs font-medium px-2.5 py-1.5 rounded-lg border transition-colors ${isRectangleMode ? 'bg-[#147a82]/10 text-[#147a82] border-[#147a82]' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'}`}
+                aria-pressed={isRectangleMode}>
+                Draw area
+              </button>
               <button
                 type="button"
-                onClick={() => setSelectionMode(selectionMode === 'brush-add' ? 'select' : 'brush-add')}
+                onClick={() => setSelectionMode(selectionMode === 'brush-add' ? 'rectangle' : 'brush-add')}
                 disabled={!customLayers.some((layer) => layer.selected && !layer.locked)}
                 className={`text-xs font-medium px-2.5 py-1.5 rounded-lg border transition-colors ${
                   selectionMode === 'brush-add'
@@ -906,7 +878,7 @@ export function CanvasViewer({
               </button>
               <button
                 type="button"
-                onClick={() => setSelectionMode(selectionMode === 'brush-remove' ? 'select' : 'brush-remove')}
+                onClick={() => setSelectionMode(selectionMode === 'brush-remove' ? 'rectangle' : 'brush-remove')}
                 disabled={!customLayers.some((layer) => layer.selected && !layer.locked)}
                 className={`text-xs font-medium px-2.5 py-1.5 rounded-lg border transition-colors ${
                   selectionMode === 'brush-remove'

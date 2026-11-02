@@ -389,6 +389,22 @@ test('renders independent colours, preserves untouched pixels, and protects regi
   assert.deepEqual(Array.from(output.data.slice(8, 11)), [20, 20, 20]);
 });
 
+test('explicit manual layers can paint protected pixels without changing other layers', () => {
+  const source = new TestImageData(2, 1) as unknown as ImageData;
+  source.data.set([100, 100, 100, 255, 100, 100, 100, 255]);
+  const mask = createEmptyMask(2, 1);
+  mask.data.fill(255);
+  const protection = createEmptyMask(2, 1);
+  protection.data.fill(255);
+  const explicitMask = createEmptyMask(2, 1);
+  explicitMask.data[0] = 255;
+  const output = renderLayeredImage(source, [layer('automatic', mask, 0),
+    { ...layer('manual', explicitMask, 1), source: 'manual', overrideProtected: true }],
+  { automatic: { colorId: 'a', colorHex: '#ff0000' }, manual: { colorId: 'b', colorHex: '#00ff00' } }, [protection]);
+  assert.notDeepEqual(Array.from(output.data.slice(0, 3)), [100, 100, 100]);
+  assert.deepEqual(Array.from(output.data.slice(4, 7)), [100, 100, 100]);
+});
+
 test('benchmark reports overlap, boundary, protected leakage, and correction effort', () => {
   const reference = Uint8Array.from([0, 255, 255, 0, 0, 0]);
   const prediction = Uint8Array.from([0, 255, 255, 255, 0, 0]);

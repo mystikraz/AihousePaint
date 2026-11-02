@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   ArchitecturalLayer,
   createEmptyMask,
+  fillSmallMaskHoles,
   createRectangleMask,
   createSelectionOverlayData,
   deserializeLayers,
@@ -21,6 +22,7 @@ import {
 } from '../lib/architectural-layer-engine';
 import { isProtectedNonWallPixel } from '../lib/canvas-recolor';
 import { LocalEdgeAwareProvider, WorkerEdgeAwareProvider } from '../lib/segmentation';
+import { normalizeArchitecturalCandidates } from '../lib/architectural-decomposition';
 const { calculateMaskMetrics } = require('../scripts/segmentation-benchmark.cjs');
 
 class TestImageData {
@@ -70,6 +72,48 @@ test('creates rectangle selections without including protected pixels', () => {
   assert.equal(mask.data[1 * 5 + 2], 0);
   assert.equal(mask.data[2 * 5 + 3], 255);
   assert.equal(mask.data[0], 0);
+});
+
+test('normalizes AI masks, rejects broad building masks, and gives protected pixels precedence', () => {
+  const paintable = createEmptyMask(3, 3);
+  paintable.data.fill(255);
+  const protectedRegion = createEmptyMask(1, 1);
+  protectedRegion.data[0] = 255;
+  const broad = createEmptyMask(4, 4);
+  broad.data.fill(255);
+  const result = normalizeArchitecturalCandidates([
+    {
+      id: 'wall-1',
+      label: 'Ground-floor wall',
+      category: 'paintable',
+      paintable: true,
+      confidence: 0.9,
+      bounds: { left: 1, top: 1, right: 4, bottom: 4 },
+      mask: paintable,
+    },
+    {
+      id: 'window-1',
+      label: 'Window',
+      category: 'protected',
+      paintable: false,
+      confidence: 0.95,
+      bounds: { left: 2, top: 2, right: 3, bottom: 3 },
+      mask: protectedRegion,
+    },
+    {
+      id: 'building-1',
+      label: 'Exterior wall',
+      category: 'paintable',
+      paintable: true,
+      bounds: { left: 0, top: 0, right: 4, bottom: 4 },
+      mask: broad,
+    },
+  ], 4, 4, 'meta-sam', 'sam-3.1');
+  assert.equal(result.layers.length, 1);
+  assert.equal(result.layers[0].mask.data[2 * 4 + 2], 0);
+  assert.equal(result.protectedMask.data[2 * 4 + 2], 255);
+  assert.equal(result.layers[0].reviewStatus, 'high-confidence');
+  assert.ok(result.warnings.some((warning) => warning.includes('whole-building')));
 });
 
 test('converts existing preset zones into independent layers', () => {
@@ -287,6 +331,20 @@ test('brush refinement adds and erases only the selected mask', () => {
   assert.equal(added.data[4 * 9 + 4], 255);
   assert.equal(erased.data[4 * 9 + 4], 0);
   assert.equal(mask.data[4 * 9 + 4], 0);
+});
+
+test('gap repair fills enclosed holes but preserves protected and exterior areas', () => {
+  const mask = createEmptyMask(7, 7);
+  for (let y = 1; y < 6; y++) for (let x = 1; x < 6; x++) mask.data[y * 7 + x] = 255;
+  mask.data[2 * 7 + 2] = 0;
+  mask.data[4 * 7 + 4] = 0;
+  const protectedMask = createEmptyMask(7, 7);
+  protectedMask.data[4 * 7 + 4] = 255;
+  const result = fillSmallMaskHoles(mask, protectedMask);
+  assert.equal(result.data[2 * 7 + 2], 255);
+  assert.equal(result.data[4 * 7 + 4], 0);
+  assert.equal(result.data[0], 0);
+  assert.equal(mask.data[2 * 7 + 2], 0);
 });
 
 test('brush erase can remove a protected pixel from a mistaken selection', () => {

@@ -8,6 +8,13 @@ export type ArchitecturalLayerType =
 
 export type LayerSource = 'preset' | 'AI' | 'manual';
 
+export type ArchitecturalLayerCategory = 'paintable' | 'protected' | 'unknown';
+export type ArchitecturalLayerReviewStatus =
+  | 'high-confidence'
+  | 'low-confidence'
+  | 'needs-review'
+  | 'accepted';
+
 export interface RasterMask {
   width: number;
   height: number;
@@ -41,6 +48,14 @@ export interface ArchitecturalLayer {
   assignedColorId: string | null;
   zIndex: number;
   source: LayerSource;
+  category?: ArchitecturalLayerCategory;
+  semanticLabel?: string;
+  reviewStatus?: ArchitecturalLayerReviewStatus;
+  modelProvider?: string;
+  modelVersion?: string;
+  /** Explicitly drawn areas can include pixels automatically marked protected. */
+  overrideProtected?: boolean;
+  detectionId?: string;
 }
 
 export interface HouseProjectSnapshot {
@@ -333,6 +348,44 @@ export function subtractMask(source: RasterMask, removed: RasterMask): RasterMas
   const result = cloneMask(source);
   for (let pixel = 0; pixel < result.data.length; pixel++) {
     if (removed.data[pixel]) result.data[pixel] = 0;
+  }
+  return result;
+}
+
+/** Fill small enclosed gaps without changing protected pixels or exterior regions. */
+export function fillSmallMaskHoles(source: RasterMask, protectedMask?: RasterMask): RasterMask {
+  const { width, height, data } = source;
+  if (data.length !== width * height || (protectedMask &&
+    (protectedMask.width !== width || protectedMask.height !== height || protectedMask.data.length !== data.length))) {
+    throw new RangeError('Mask dimensions do not match.');
+  }
+  const result = cloneMask(source);
+  const visited = new Uint8Array(data.length);
+  const queue = new Int32Array(data.length);
+  const maxHole = Math.max(4, Math.min(4096, Math.floor(data.length * 0.001)));
+  for (let start = 0; start < data.length; start++) {
+    if (data[start] || visited[start]) continue;
+    let head = 0, tail = 0;
+    let touchesEdge = false, touchesProtected = false;
+    queue[tail++] = start;
+    visited[start] = 1;
+    while (head < tail) {
+      const pixel = queue[head++];
+      const x = pixel % width, y = Math.floor(pixel / width);
+      if (x === 0 || y === 0 || x === width - 1 || y === height - 1) touchesEdge = true;
+      if (protectedMask?.data[pixel]) touchesProtected = true;
+      const neighbours = [x > 0 ? pixel - 1 : -1, x + 1 < width ? pixel + 1 : -1,
+        y > 0 ? pixel - width : -1, y + 1 < height ? pixel + width : -1];
+      for (const next of neighbours) {
+        if (next >= 0 && !data[next] && !visited[next]) {
+          visited[next] = 1;
+          queue[tail++] = next;
+        }
+      }
+    }
+    if (!touchesEdge && !touchesProtected && tail <= maxHole) {
+      for (let i = 0; i < tail; i++) result.data[queue[i]] = 255;
+    }
   }
   return result;
 }
@@ -703,11 +756,9 @@ export function renderLayeredImage(
 
   for (let pixel = 0; pixel < output.data.length; pixel += 4) {
     const pixelIndex = pixel / 4;
-    if (protectedMask?.data[pixelIndex]) continue;
-
     let selectedLayer: ArchitecturalLayer | undefined;
     for (const layer of orderedLayers) {
-      if (layer.mask.data[pixelIndex]) selectedLayer = layer;
+      if (layer.mask.data[pixelIndex] && (!protectedMask?.data[pixelIndex] || layer.overrideProtected)) selectedLayer = layer;
     }
     if (!selectedLayer) continue;
 

@@ -6,6 +6,7 @@ import { CustomerDetails } from './CustomerDetailsCard';
 import {
   LayerColourAssignment,
   SerializedArchitecturalLayer,
+  SerializedRasterMask,
 } from '@/lib/architectural-layer-engine';
 
 export interface SavedProject {
@@ -18,6 +19,7 @@ export interface SavedProject {
   customImageSrc?: string | null;
   customLayers?: SerializedArchitecturalLayer[];
   customColourAssignments?: Record<string, LayerColourAssignment>;
+  customProtectedMask?: SerializedRasterMask;
   thumbnailDataUrl?: string;
 }
 

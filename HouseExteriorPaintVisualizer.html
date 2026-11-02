@@ -1,0 +1,1059 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-slate-950 text-slate-100">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Architectural Paint Studio - Exterior Visualizer</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Google Fonts: Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    /* Custom scrollbars */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 9999px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+    /* Custom Checkered Background for Transparency */
+    .bg-checkered {
+      background-image: linear-gradient(45deg, #1e293b 25%, transparent 25%), 
+                        linear-gradient(-45deg, #1e293b 25%, transparent 25%), 
+                        linear-gradient(45deg, transparent 75%, #1e293b 75%), 
+                        linear-gradient(-45deg, transparent 75%, #1e293b 75%);
+      background-size: 16px 16px;
+      background-position: 0 0, 0 8px, 8px -8px, -8px 0px;
+    }
+  </style>
+</head>
+<body class="h-full flex flex-col overflow-hidden select-none">
+
+  <!-- TOP HEADER -->
+  <header class="h-14 border-b border-slate-800 bg-slate-900/90 backdrop-blur px-4 flex items-center justify-between z-30 shrink-0">
+    <div class="flex items-center space-x-3">
+      <div class="p-2 bg-indigo-600 rounded-lg text-white shadow-lg shadow-indigo-600/30">
+        <i data-lucide="palette" class="w-5 h-5"></i>
+      </div>
+      <div>
+        <h1 class="font-bold text-base leading-none text-slate-100">ColorCraft Studio</h1>
+        <p class="text-xs text-slate-400 mt-0.5">Exterior House Paint Visualizer & Layer Editor</p>
+      </div>
+    </div>
+
+    <!-- Top Action Buttons -->
+    <div class="flex items-center space-x-2">
+      <!-- Image Upload Button -->
+      <label class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium cursor-pointer border border-slate-700 transition">
+        <i data-lucide="upload" class="w-4 h-4 text-slate-400"></i>
+        <span>Upload House</span>
+        <input type="file" id="imageUploader" accept="image/*" class="hidden">
+      </label>
+
+      <!-- Sample Picker Dropdown -->
+      <div class="relative inline-block text-left">
+        <button id="sampleBtn" class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium border border-slate-700 transition">
+          <i data-lucide="home" class="w-4 h-4 text-slate-400"></i>
+          <span>Sample Houses</span>
+          <i data-lucide="chevron-down" class="w-3.5 h-3.5 text-slate-400"></i>
+        </button>
+        <div id="sampleDropdown" class="hidden absolute right-0 mt-2 w-48 rounded-xl bg-slate-900 border border-slate-800 shadow-2xl z-50 p-1">
+          <button onclick="loadSample('suburban')" class="w-full text-left px-3 py-2 text-xs rounded-lg hover:bg-slate-800 flex items-center space-x-2">
+            <span class="w-3 h-3 rounded-full bg-amber-600"></span>
+            <span>Suburban Two-Story</span>
+          </button>
+          <button onclick="loadSample('modern')" class="w-full text-left px-3 py-2 text-xs rounded-lg hover:bg-slate-800 flex items-center space-x-2">
+            <span class="w-3 h-3 rounded-full bg-indigo-500"></span>
+            <span>Modern Minimalist</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="h-4 w-[1px] bg-slate-800 mx-1"></div>
+
+      <!-- Compare Toggle -->
+      <button id="compareBtn" onclick="toggleCompareMode()" class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium border border-slate-700 transition">
+        <i data-lucide="split-square-vertical" class="w-4 h-4 text-indigo-400"></i>
+        <span id="compareBtnText">Split Compare</span>
+      </button>
+
+      <!-- Export Button -->
+      <button onclick="exportImage()" class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md shadow-indigo-600/20 transition">
+        <i data-lucide="download" class="w-4 h-4"></i>
+        <span>Export</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- MAIN STUDIO LAYOUT -->
+  <div class="flex-1 flex overflow-hidden relative">
+
+    <!-- LEFT TOOLBAR (Tools & Zoom Controls) -->
+    <div class="w-14 border-r border-slate-800 bg-slate-900/60 flex flex-col items-center py-4 space-y-4 shrink-0 z-20">
+      <button title="Pan & Select" id="toolPan" onclick="setActiveTool('pan')" class="p-2.5 rounded-xl bg-indigo-600 text-white shadow-md transition">
+        <i data-lucide="hand" class="w-5 h-5"></i>
+      </button>
+      <button title="Paint Fill Area" id="toolPaint" onclick="setActiveTool('paint')" class="p-2.5 rounded-xl text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition">
+        <i data-lucide="paint-bucket" class="w-5 h-5"></i>
+      </button>
+      <button title="Add Mask Brush" id="toolBrush" onclick="setActiveTool('brush')" class="p-2.5 rounded-xl text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition">
+        <i data-lucide="brush" class="w-5 h-5"></i>
+      </button>
+      <button title="Eraser Mask" id="toolEraser" onclick="setActiveTool('eraser')" class="p-2.5 rounded-xl text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition">
+        <i data-lucide="eraser" class="w-5 h-5"></i>
+      </button>
+
+      <div class="w-8 h-[1px] bg-slate-800 my-1"></div>
+
+      <!-- Mask Visibility Overlay -->
+      <button title="Toggle Mask Overlay View" id="toggleMaskOverlay" onclick="toggleMaskOverlayView()" class="p-2.5 rounded-xl text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition">
+        <i data-lucide="eye" class="w-5 h-5"></i>
+      </button>
+
+      <div class="flex-1"></div>
+
+      <!-- Zoom Controls -->
+      <button onclick="zoomCanvas(1.2)" title="Zoom In" class="p-2 text-slate-400 hover:text-slate-200">
+        <i data-lucide="zoom-in" class="w-5 h-5"></i>
+      </button>
+      <span id="zoomLevelText" class="text-[10px] font-mono text-slate-500">100%</span>
+      <button onclick="zoomCanvas(0.8)" title="Zoom Out" class="p-2 text-slate-400 hover:text-slate-200">
+        <i data-lucide="zoom-out" class="w-5 h-5"></i>
+      </button>
+      <button onclick="resetZoom()" title="Reset View" class="p-2 text-slate-400 hover:text-slate-200">
+        <i data-lucide="maximize" class="w-5 h-5"></i>
+      </button>
+    </div>
+
+    <!-- CENTER CANVAS WORKSPACE -->
+    <div id="canvasViewport" class="flex-1 relative overflow-hidden bg-slate-950 flex items-center justify-center cursor-grab active:cursor-grabbing bg-checkered">
+      
+      <!-- Canvas Wrapper -->
+      <div id="canvasTransformContainer" class="relative transition-transform duration-75 origin-center shadow-2xl border border-slate-800 rounded-lg overflow-hidden">
+        <!-- Base House Image Canvas -->
+        <canvas id="baseCanvas" class="block"></canvas>
+        <!-- Rendered Paint Canvas Layer -->
+        <canvas id="paintCanvas" class="absolute top-0 left-0 pointer-events-none"></canvas>
+        <!-- Mask Edit Preview Overlay Canvas -->
+        <canvas id="maskOverlayCanvas" class="absolute top-0 left-0 pointer-events-none opacity-40"></canvas>
+      </div>
+
+      <!-- Before / After Slider Element (Hidden by Default) -->
+      <div id="compareSliderContainer" class="hidden absolute inset-0 z-30 pointer-events-none">
+        <div id="compareDivider" class="absolute top-0 bottom-0 w-1 bg-white shadow-[0_0_12px_rgba(0,0,0,0.8)] pointer-events-auto cursor-ew-resize flex items-center justify-center" style="left: 50%;">
+          <div class="w-8 h-8 rounded-full bg-slate-900 border-2 border-white shadow-xl flex items-center justify-center text-slate-300">
+            <i data-lucide="chevrons-left-right" class="w-4 h-4"></i>
+          </div>
+        </div>
+      </div>
+
+      <!-- Brush Size Floating HUD (Visible in Brush/Eraser tool) -->
+      <div id="brushHud" class="hidden absolute bottom-4 left-6 bg-slate-900/90 border border-slate-800 backdrop-blur rounded-full px-4 py-2 flex items-center space-x-3 shadow-xl z-20">
+        <span class="text-xs text-slate-400 font-medium">Brush Radius</span>
+        <input type="range" id="brushRadiusInput" min="3" max="60" value="20" class="w-24 accent-indigo-500">
+        <span id="brushRadiusVal" class="text-xs font-mono text-indigo-400">20px</span>
+      </div>
+    </div>
+
+    <!-- RIGHT STUDIO PANEL -->
+    <div class="w-80 border-l border-slate-800 bg-slate-900/90 backdrop-blur flex flex-col shrink-0 z-20">
+      
+      <!-- Studio Tabs Header -->
+      <div class="flex border-b border-slate-800 text-xs font-medium">
+        <button id="tabLayersBtn" onclick="switchTab('layers')" class="flex-1 py-3 border-b-2 border-indigo-500 text-indigo-400 font-semibold flex items-center justify-center space-x-1.5">
+          <i data-lucide="layers" class="w-4 h-4"></i>
+          <span>Layers Mask</span>
+        </button>
+        <button id="tabPaletteBtn" onclick="switchTab('palette')" class="flex-1 py-3 border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center justify-center space-x-1.5">
+          <i data-lucide="pipette" class="w-4 h-4"></i>
+          <span>Color Studio</span>
+        </button>
+      </div>
+
+      <!-- TAB 1: LAYERS MANAGEMENT -->
+      <div id="tabLayers" class="flex-1 overflow-y-auto p-4 space-y-4">
+        
+        <div class="flex items-center justify-between">
+          <h2 class="text-xs font-bold uppercase tracking-wider text-slate-400">Architectural Zones</h2>
+          <span class="text-[11px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full">4 Layers</span>
+        </div>
+
+        <!-- Layer List Cards -->
+        <div class="space-y-2.5" id="layersList">
+          <!-- Populated dynamically via JS -->
+        </div>
+
+        <div class="border-t border-slate-800 pt-4 mt-4 space-y-3">
+          <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400">Layer Painting Adjustments</h3>
+
+          <!-- Opacity Control -->
+          <div>
+            <div class="flex justify-between text-xs mb-1">
+              <span class="text-slate-400">Paint Opacity</span>
+              <span id="opacityVal" class="font-mono text-indigo-400">85%</span>
+            </div>
+            <input type="range" id="opacitySlider" min="0" max="100" value="85" class="w-full accent-indigo-500 bg-slate-800 rounded-lg h-1.5">
+          </div>
+
+          <!-- Blend Mode Control -->
+          <div>
+            <label class="text-xs text-slate-400 block mb-1">Texture Blend Mode</label>
+            <select id="blendModeSelect" onchange="updateBlendMode(this.value)" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-medium focus:outline-none focus:border-indigo-500">
+              <option value="multiply">Multiply (Preserves Shadows & Grain)</option>
+              <option value="overlay">Overlay (High Contrast Light)</option>
+              <option value="soft-light">Soft Light (Subtle Tint)</option>
+              <option value="source-over">Solid Opaque</option>
+            </select>
+          </div>
+
+          <!-- Mask Tolerance/Feathering -->
+          <div>
+            <div class="flex justify-between text-xs mb-1">
+              <span class="text-slate-400">Edge Feathering</span>
+              <span id="featherVal" class="font-mono text-indigo-400">2px</span>
+            </div>
+            <input type="range" id="featherSlider" min="0" max="10" value="2" class="w-full accent-indigo-500 bg-slate-800 rounded-lg h-1.5">
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 2: COLOR PALETTE & CUSTOM PICKER -->
+      <div id="tabPalette" class="hidden flex-1 overflow-y-auto p-4 space-y-4">
+        
+        <!-- Active Layer Swatch Banner -->
+        <div class="p-3 bg-slate-800/80 rounded-xl border border-slate-700/60 flex items-center justify-between">
+          <div class="flex items-center space-x-3">
+            <div id="activeLayerSwatch" class="w-8 h-8 rounded-lg border-2 border-white/20 shadow-md bg-slate-700"></div>
+            <div>
+              <p class="text-[11px] text-slate-400 leading-tight">Painting Layer</p>
+              <p id="activeLayerName" class="text-xs font-semibold text-slate-200">Main Exterior Walls</p>
+            </div>
+          </div>
+          <button onclick="clearCurrentLayerPaint()" class="text-xs text-rose-400 hover:text-rose-300 font-medium hover:underline">Clear</button>
+        </div>
+
+        <!-- Preset Palette Categories -->
+        <div class="space-y-4">
+          
+          <!-- Category Select -->
+          <div>
+            <label class="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-2">Palette Collections</label>
+            <div class="grid grid-cols-2 gap-1.5 text-xs">
+              <button onclick="switchPaletteCategory('modern')" id="catModern" class="px-2.5 py-1.5 rounded-lg bg-indigo-600 text-white font-medium text-left">Modern Neutral</button>
+              <button onclick="switchPaletteCategory('slate')" id="catSlate" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-left">Classic Slate</button>
+              <button onclick="switchPaletteCategory('terracotta')" id="catTerracotta" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-left">Warm Terracotta</button>
+              <button onclick="switchPaletteCategory('coastal')" id="catCoastal" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-left">Coastal Blue</button>
+            </div>
+          </div>
+
+          <!-- Color Swatches Grid -->
+          <div id="paletteSwatches" class="grid grid-cols-4 gap-2.5">
+            <!-- Swatches dynamically loaded -->
+          </div>
+
+          <!-- Custom Color Picker -->
+          <div class="border-t border-slate-800 pt-3 space-y-2">
+            <label class="text-xs font-bold uppercase tracking-wider text-slate-400 block">Custom Color Picker</label>
+            <div class="flex items-center space-x-2">
+              <input type="color" id="customColorPicker" value="#4f46e5" class="w-10 h-10 rounded-lg bg-transparent border-0 cursor-pointer">
+              <div class="flex-1">
+                <input type="text" id="customHexInput" value="#4F46E5" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-200 font-mono uppercase focus:outline-none focus:border-indigo-500">
+              </div>
+              <button onclick="applyCustomHexColor()" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg shadow">Apply</button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- FOOTER SUMMARY -->
+      <div class="p-3 border-t border-slate-800 bg-slate-900 flex items-center justify-between text-xs text-slate-400">
+        <span class="flex items-center space-x-1.5">
+          <i data-lucide="info" class="w-3.5 h-3.5 text-indigo-400"></i>
+          <span>Click mask to paint</span>
+        </span>
+        <button onclick="resetAllLayers()" class="hover:text-rose-400 font-medium transition">Reset All</button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- JAVASCRIPT APPLICATION LOGIC -->
+  <script>
+    // --- APP STATE ---
+    const state = {
+      imageLoaded: false,
+      currentSample: 'suburban',
+      activeTool: 'pan', // 'pan', 'paint', 'brush', 'eraser'
+      activeLayerId: 'walls',
+      brushRadius: 20,
+      zoom: 1,
+      panX: 0,
+      panY: 0,
+      isPanning: false,
+      startPanX: 0,
+      startPanY: 0,
+      isDrawingMask: false,
+      compareMode: false,
+      showMaskOverlay: false,
+      
+      // Layers Definition
+      layers: [
+        { id: 'walls', name: 'Main Walls', color: '#CBD5E1', maskColor: 'rgba(59, 130, 246, 0.4)', blendMode: 'multiply', opacity: 0.85, maskData: null, paintedColor: null },
+        { id: 'trim', name: 'Trim & Eaves', color: '#F8FAFC', maskColor: 'rgba(16, 185, 129, 0.4)', blendMode: 'multiply', opacity: 0.90, maskData: null, paintedColor: null },
+        { id: 'door', name: 'Door & Shutters', color: '#991B1B', maskColor: 'rgba(245, 158, 11, 0.4)', blendMode: 'multiply', opacity: 0.90, maskData: null, paintedColor: null },
+        { id: 'frames', name: 'Window Frames', color: '#1E293B', maskColor: 'rgba(236, 72, 153, 0.4)', blendMode: 'multiply', opacity: 0.85, maskData: null, paintedColor: null }
+      ]
+    };
+
+    // Color Palettes Data
+    const palettes = {
+      modern: [
+        { name: 'Swiss Alp White', hex: '#F8FAFC' },
+        { name: 'Greige Comfort', hex: '#D1D5DB' },
+        { name: 'Charcoal Modern', hex: '#374151' },
+        { name: 'Midnight Onyx', hex: '#111827' },
+        { name: 'Warm Taupe', hex: '#A8A29E' },
+        { name: 'Soft Olive', hex: '#8492A6' },
+        { name: 'Slate Cedar', hex: '#475569' },
+        { name: 'Nordic Blue', hex: '#64748B' }
+      ],
+      slate: [
+        { name: 'Storm Slate', hex: '#334155' },
+        { name: 'Granite Peak', hex: '#475569' },
+        { name: 'Foggy Harbor', hex: '#94A3B8' },
+        { name: 'Pewter Ash', hex: '#CBD5E1' },
+        { name: 'Deep Steel', hex: '#1E293B' },
+        { name: 'Iceberg Silver', hex: '#E2E8F0' },
+        { name: 'Iron Shingle', hex: '#0F172A' },
+        { name: 'Cloud Cover', hex: '#F1F5F9' }
+      ],
+      terracotta: [
+        { name: 'Tuscan Sun', hex: '#EA580C' },
+        { name: 'Adobe Clay', hex: '#C2410C' },
+        { name: 'Warm Ochre', hex: '#D97706' },
+        { name: 'Desert Rust', hex: '#9A3412' },
+        { name: 'Sandstone Beige', hex: '#FDE68A' },
+        { name: 'Burnt Sienna', hex: '#7C2D12' },
+        { name: 'Cream Linen', hex: '#FEF3C7' },
+        { name: 'Terracotta Tile', hex: '#B45309' }
+      ],
+      coastal: [
+        { name: 'Pacific Navy', hex: '#1E3A8A' },
+        { name: 'Seafoam Glass', hex: '#99F6E4' },
+        { name: 'Nautical Navy', hex: '#1D4ED8' },
+        { name: 'Breezy Azure', hex: '#38BDF8' },
+        { name: 'Cape Cod Blue', hex: '#0284C7' },
+        { name: 'Coastal Mist', hex: '#E0F2FE' },
+        { name: 'Deep Trench', hex: '#0F172A' },
+        { name: 'Sandy Beach', hex: '#FEF08A' }
+      ]
+    };
+
+    // Canvas Element References
+    let baseCanvas, baseCtx;
+    let paintCanvas, paintCtx;
+    let maskOverlayCanvas, maskOverlayCtx;
+    let imgElement = new Image();
+
+    // Init App on Window Load
+    window.onload = function() {
+      lucide.createIcons();
+      initCanvases();
+      renderLayersList();
+      switchPaletteCategory('modern');
+      setupEventListeners();
+      loadSample('suburban');
+    };
+
+    function initCanvases() {
+      baseCanvas = document.getElementById('baseCanvas');
+      baseCtx = baseCanvas.getContext('2d');
+      paintCanvas = document.getElementById('paintCanvas');
+      paintCtx = paintCanvas.getContext('2d');
+      maskOverlayCanvas = document.getElementById('maskOverlayCanvas');
+      maskOverlayCtx = maskOverlayCanvas.getContext('2d');
+    }
+
+    // --- PROCEDURAL SAMPLE HOUSE GENERATOR ---
+    function loadSample(sampleType) {
+      state.currentSample = sampleType;
+      const width = 1000;
+      const height = 750;
+
+      baseCanvas.width = width;
+      baseCanvas.height = height;
+      paintCanvas.width = width;
+      paintCanvas.height = height;
+      maskOverlayCanvas.width = width;
+      maskOverlayCanvas.height = height;
+
+      // Create Layer Masks Offscreen Canvas
+      state.layers.forEach(l => {
+        const c = document.createElement('canvas');
+        c.width = width;
+        c.height = height;
+        l.maskCanvas = c;
+        l.maskCtx = c.getContext('2d');
+      });
+
+      if (sampleType === 'suburban') {
+        renderSuburbanHouse(width, height);
+      } else {
+        renderModernHouse(width, height);
+      }
+
+      resetZoom();
+      renderAll();
+    }
+
+    // Render Procedural Suburban House & Prepare Intelligent Layer Masks
+    function renderSuburbanHouse(w, h) {
+      // 1. Draw Base Image
+      const ctx = baseCtx;
+      ctx.fillStyle = '#87CEEB'; // Sky
+      ctx.fillRect(0, 0, w, h * 0.4);
+
+      // Grass & Lawn
+      const grassGrad = ctx.createLinearGradient(0, h * 0.65, 0, h);
+      grassGrad.addColorStop(0, '#4ADE80');
+      grassGrad.addColorStop(1, '#15803D');
+      ctx.fillStyle = grassGrad;
+      ctx.fillRect(0, h * 0.65, w, h * 0.35);
+
+      // Main House Structure (Walls)
+      const wallX = w * 0.2, wallY = h * 0.25, wallW = w * 0.6, wallH = h * 0.45;
+      ctx.fillStyle = '#D1D5DB';
+      ctx.fillRect(wallX, wallY, wallW, wallH);
+
+      // Siding lines texture
+      ctx.strokeStyle = '#9CA3AF';
+      ctx.lineWidth = 1;
+      for (let y = wallY + 15; y < wallY + wallH; y += 15) {
+        ctx.beginPath(); ctx.moveTo(wallX, y); ctx.lineTo(wallX + wallW, y); ctx.stroke();
+      }
+
+      // Roof Triangular Gable
+      ctx.fillStyle = '#374151';
+      ctx.beginPath();
+      ctx.moveTo(wallX - 30, wallY);
+      ctx.lineTo(w / 2, wallY - 120);
+      ctx.lineTo(wallX + wallW + 30, wallY);
+      ctx.closePath();
+      ctx.fill();
+
+      // Trim & Eaves
+      ctx.fillStyle = '#F8FAFC';
+      ctx.fillRect(wallX - 35, wallY - 5, wallW + 70, 16);
+
+      // Front Door
+      const doorX = w * 0.46, doorY = wallY + wallH - 120, doorW = 80, doorH = 120;
+      ctx.fillStyle = '#7C2D12';
+      ctx.fillRect(doorX, doorY, doorW, doorH);
+
+      // Window Frames
+      ctx.fillStyle = '#1E293B';
+      const win1X = wallX + 60, win1Y = wallY + 40, winW = 90, winH = 110;
+      const win2X = wallX + wallW - 150, win2Y = wallY + 40;
+      ctx.fillRect(win1X, win1Y, winW, winH);
+      ctx.fillRect(win2X, win2Y, winW, winH);
+
+      // Glass inside windows
+      ctx.fillStyle = '#93C5FD';
+      ctx.fillRect(win1X + 8, win1Y + 8, winW - 16, winH - 16);
+      ctx.fillRect(win2X + 8, win2Y + 8, winW - 16, winH - 16);
+
+      // Shutters next to windows
+      ctx.fillStyle = '#1E3A8A';
+      ctx.fillRect(win1X - 30, win1Y, 25, winH);
+      ctx.fillRect(win1X + winW + 5, win1Y, 25, winH);
+      ctx.fillRect(win2X - 30, win2Y, 25, winH);
+      ctx.fillRect(win2X + winW + 5, win2Y, 25, winH);
+
+      // Ground path
+      ctx.fillStyle = '#94A3B8';
+      ctx.beginPath();
+      ctx.moveTo(doorX + 10, doorY + doorH);
+      ctx.lineTo(doorX + doorW - 10, doorY + doorH);
+      ctx.lineTo(w * 0.55, h);
+      ctx.lineTo(w * 0.35, h);
+      ctx.closePath();
+      ctx.fill();
+
+      // 2. Generate Corresponding Masks into Layer Offscreen Canvases
+      // Layer: Main Walls
+      const lWalls = state.layers.find(l => l.id === 'walls');
+      lWalls.maskCtx.clearRect(0, 0, w, h);
+      lWalls.maskCtx.fillStyle = '#FFFFFF';
+      lWalls.maskCtx.fillRect(wallX, wallY, wallW, wallH);
+      // Cut out doors & windows from main walls mask
+      lWalls.maskCtx.globalCompositeOperation = 'destination-out';
+      lWalls.maskCtx.fillRect(doorX, doorY, doorW, doorH);
+      lWalls.maskCtx.fillRect(win1X - 30, win1Y, winW + 60, winH);
+      lWalls.maskCtx.fillRect(win2X - 30, win2Y, winW + 60, winH);
+      lWalls.maskCtx.globalCompositeOperation = 'source-over';
+
+      // Layer: Trim
+      const lTrim = state.layers.find(l => l.id === 'trim');
+      lTrim.maskCtx.clearRect(0, 0, w, h);
+      lTrim.maskCtx.fillStyle = '#FFFFFF';
+      lTrim.maskCtx.fillRect(wallX - 35, wallY - 12, wallW + 70, 24);
+
+      // Layer: Door & Shutters
+      const lDoor = state.layers.find(l => l.id === 'door');
+      lDoor.maskCtx.clearRect(0, 0, w, h);
+      lDoor.maskCtx.fillStyle = '#FFFFFF';
+      lDoor.maskCtx.fillRect(doorX, doorY, doorW, doorH);
+      lDoor.maskCtx.fillRect(win1X - 30, win1Y, 25, winH);
+      lDoor.maskCtx.fillRect(win1X + winW + 5, win1Y, 25, winH);
+      lDoor.maskCtx.fillRect(win2X - 30, win2Y, 25, winH);
+      lDoor.maskCtx.fillRect(win2X + winW + 5, win2Y, 25, winH);
+
+      // Layer: Window Frames
+      const lFrames = state.layers.find(l => l.id === 'frames');
+      lFrames.maskCtx.clearRect(0, 0, w, h);
+      lFrames.maskCtx.fillStyle = '#FFFFFF';
+      lFrames.maskCtx.fillRect(win1X, win1Y, winW, winH);
+      lFrames.maskCtx.fillRect(win2X, win2Y, winW, winH);
+      // punch out glass area
+      lFrames.maskCtx.globalCompositeOperation = 'destination-out';
+      lFrames.maskCtx.fillRect(win1X + 8, win1Y + 8, winW - 16, winH - 16);
+      lFrames.maskCtx.fillRect(win2X + 8, win2Y + 8, winW - 16, winH - 16);
+      lFrames.maskCtx.globalCompositeOperation = 'source-over';
+    }
+
+    function renderModernHouse(w, h) {
+      const ctx = baseCtx;
+      ctx.fillStyle = '#0F172A'; ctx.fillRect(0, 0, w, h);
+
+      // Modern Sky Gradient
+      const sky = ctx.createLinearGradient(0, 0, 0, h * 0.5);
+      sky.addColorStop(0, '#38BDF8'); sky.addColorStop(1, '#BAE6FD');
+      ctx.fillStyle = sky; ctx.fillRect(0, 0, w, h * 0.5);
+
+      // Ground
+      ctx.fillStyle = '#334155'; ctx.fillRect(0, h * 0.6, w, h * 0.4);
+
+      // Main Block 1 (Concrete Box)
+      const b1X = w * 0.15, b1Y = h * 0.25, b1W = w * 0.45, b1H = h * 0.4;
+      ctx.fillStyle = '#94A3B8'; ctx.fillRect(b1X, b1Y, b1W, b1H);
+
+      // Main Block 2 (Wood Accent Upper Box)
+      const b2X = w * 0.45, b2Y = h * 0.15, b2W = w * 0.4, b2H = h * 0.3;
+      ctx.fillStyle = '#D97706'; ctx.fillRect(b2X, b2Y, b2W, b2H);
+
+      // Windows
+      ctx.fillStyle = '#1E293B';
+      const w1X = b1X + 30, w1Y = b1Y + 30, w1W = 120, w1H = 160;
+      ctx.fillRect(w1X, w1Y, w1W, w1H);
+      ctx.fillStyle = '#38BDF8'; ctx.fillRect(w1X + 6, w1Y + 6, w1W - 12, w1H - 12);
+
+      // Door
+      const dX = b1X + b1W - 90, dY = b1Y + b1H - 110, dW = 70, dH = 110;
+      ctx.fillStyle = '#1E1B4B'; ctx.fillRect(dX, dY, dW, dH);
+
+      // Roof Overhang Trim
+      ctx.fillStyle = '#0F172A';
+      ctx.fillRect(b2X - 10, b2Y - 10, b2W + 20, 12);
+
+      // MASKS:
+      // Walls
+      const lWalls = state.layers.find(l => l.id === 'walls');
+      lWalls.maskCtx.clearRect(0, 0, w, h);
+      lWalls.maskCtx.fillStyle = '#FFFFFF';
+      lWalls.maskCtx.fillRect(b1X, b1Y, b1W, b1H);
+      lWalls.maskCtx.fillRect(b2X, b2Y, b2W, b2H);
+      lWalls.maskCtx.globalCompositeOperation = 'destination-out';
+      lWalls.maskCtx.fillRect(w1X, w1Y, w1W, w1H);
+      lWalls.maskCtx.fillRect(dX, dY, dW, dH);
+      lWalls.maskCtx.globalCompositeOperation = 'source-over';
+
+      // Trim
+      const lTrim = state.layers.find(l => l.id === 'trim');
+      lTrim.maskCtx.clearRect(0, 0, w, h);
+      lTrim.maskCtx.fillStyle = '#FFFFFF';
+      lTrim.maskCtx.fillRect(b2X - 10, b2Y - 10, b2W + 20, 12);
+
+      // Door
+      const lDoor = state.layers.find(l => l.id === 'door');
+      lDoor.maskCtx.clearRect(0, 0, w, h);
+      lDoor.maskCtx.fillStyle = '#FFFFFF';
+      lDoor.maskCtx.fillRect(dX, dY, dW, dH);
+
+      // Frames
+      const lFrames = state.layers.find(l => l.id === 'frames');
+      lFrames.maskCtx.clearRect(0, 0, w, h);
+      lFrames.maskCtx.fillStyle = '#FFFFFF';
+      lFrames.maskCtx.fillRect(w1X, w1Y, w1W, w1H);
+      lFrames.maskCtx.globalCompositeOperation = 'destination-out';
+      lFrames.maskCtx.fillRect(w1X + 6, w1Y + 6, w1W - 12, w1H - 12);
+      lFrames.maskCtx.globalCompositeOperation = 'source-over';
+    }
+
+    // --- UPLOAD CUSTOM HOUSE ---
+    document.getElementById('imageUploader').addEventListener('change', function(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = function(evt) {
+        imgElement.onload = function() {
+          const w = imgElement.width;
+          const h = imgElement.height;
+
+          baseCanvas.width = w; baseCanvas.height = h;
+          paintCanvas.width = w; paintCanvas.height = h;
+          maskOverlayCanvas.width = w; maskOverlayCanvas.height = h;
+
+          baseCtx.drawImage(imgElement, 0, 0);
+
+          // Create auto default blank masks
+          state.layers.forEach(l => {
+            const c = document.createElement('canvas');
+            c.width = w; c.height = h;
+            l.maskCanvas = c;
+            l.maskCtx = c.getContext('2d');
+          });
+
+          // Auto setup a basic full wall mask for layer 1
+          const lWalls = state.layers.find(l => l.id === 'walls');
+          lWalls.maskCtx.fillStyle = '#FFFFFF';
+          lWalls.maskCtx.fillRect(w * 0.1, h * 0.1, w * 0.8, h * 0.8);
+
+          resetZoom();
+          renderAll();
+        };
+        imgElement.src = evt.target.result;
+      };
+      reader.readAsDataURL(file);
+    });
+
+    // --- RENDERING PIPELINE ---
+    function renderAll() {
+      // Clear Paint Canvas
+      paintCtx.clearRect(0, 0, paintCanvas.width, paintCanvas.height);
+      maskOverlayCtx.clearRect(0, 0, maskOverlayCanvas.width, maskOverlayCanvas.height);
+
+      // Render Each Layer Paint onto paintCanvas
+      state.layers.forEach(layer => {
+        if (layer.paintedColor && layer.maskCanvas) {
+          // Offscreen canvas for layer composite
+          const tempCanvas = document.createElement('canvas');
+          tempCanvas.width = paintCanvas.width;
+          tempCanvas.height = paintCanvas.height;
+          const tempCtx = tempCanvas.getContext('2d');
+
+          // Draw base image copy for blending texture
+          tempCtx.drawImage(baseCanvas, 0, 0);
+
+          // Apply color tint over base
+          tempCtx.globalCompositeOperation = 'source-in';
+          tempCtx.fillStyle = layer.paintedColor;
+          tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+
+          // Apply Mask
+          tempCtx.globalCompositeOperation = 'destination-in';
+          tempCtx.drawImage(layer.maskCanvas, 0, 0);
+
+          // Render Layer to Main Paint Canvas using Blend Mode
+          paintCtx.globalAlpha = layer.opacity;
+          paintCtx.globalCompositeOperation = layer.blendMode || 'multiply';
+          paintCtx.drawImage(tempCanvas, 0, 0);
+          paintCtx.globalAlpha = 1.0;
+          paintCtx.globalCompositeOperation = 'source-over';
+        }
+
+        // Draw Mask Overlay if enabled or editing
+        if (state.showMaskOverlay || layer.id === state.activeLayerId) {
+          if (layer.maskCanvas) {
+            const tempM = document.createElement('canvas');
+            tempM.width = maskOverlayCanvas.width;
+            tempM.height = maskOverlayCanvas.height;
+            const tMCtx = tempM.getContext('2d');
+
+            tMCtx.fillStyle = layer.maskColor;
+            tMCtx.fillRect(0, 0, tempM.width, tempM.height);
+            tMCtx.globalCompositeOperation = 'destination-in';
+            tMCtx.drawImage(layer.maskCanvas, 0, 0);
+
+            maskOverlayCtx.drawImage(tempM, 0, 0);
+          }
+        }
+      });
+    }
+
+    // --- LAYER CONTROL UI ---
+    function renderLayersList() {
+      const container = document.getElementById('layersList');
+      container.innerHTML = '';
+
+      state.layers.forEach(layer => {
+        const isActive = layer.id === state.activeLayerId;
+        const card = document.createElement('div');
+        card.className = `p-3 rounded-xl border transition cursor-pointer flex items-center justify-between ${
+          isActive 
+            ? 'bg-slate-800 border-indigo-500 shadow-md ring-1 ring-indigo-500/50' 
+            : 'bg-slate-800/40 border-slate-800 hover:bg-slate-800/80 hover:border-slate-700'
+        }`;
+        
+        card.onclick = () => selectLayer(layer.id);
+
+        card.innerHTML = `
+          <div class="flex items-center space-x-3">
+            <div class="w-7 h-7 rounded-lg shadow border border-white/10 flex items-center justify-center text-xs font-bold" 
+                 style="background-color: ${layer.paintedColor || '#334155'};">
+                 ${!layer.paintedColor ? '<i data-lucide="paint-bucket" class="w-3.5 h-3.5 text-slate-400"></i>' : ''}
+            </div>
+            <div>
+              <p class="text-xs font-semibold ${isActive ? 'text-indigo-400' : 'text-slate-200'}">${layer.name}</p>
+              <p class="text-[10px] font-mono text-slate-400">${layer.paintedColor ? layer.paintedColor.toUpperCase() : 'Unpainted'}</p>
+            </div>
+          </div>
+          <div class="flex items-center space-x-1.5">
+            <span class="w-3 h-3 rounded-full" style="background-color: ${layer.maskColor}"></span>
+            <button onclick="event.stopPropagation(); clearLayerPaint('${layer.id}')" title="Reset Layer Paint" class="p-1 hover:text-rose-400 text-slate-500 transition">
+              <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i>
+            </button>
+          </div>
+        `;
+        container.appendChild(card);
+      });
+      lucide.createIcons();
+    }
+
+    function selectLayer(layerId) {
+      state.activeLayerId = layerId;
+      const layer = state.layers.find(l => l.id === layerId);
+      
+      // Update UI Controls
+      document.getElementById('activeLayerName').innerText = layer.name;
+      document.getElementById('activeLayerSwatch').style.backgroundColor = layer.paintedColor || '#334155';
+      document.getElementById('opacitySlider').value = layer.opacity * 100;
+      document.getElementById('opacityVal').innerText = Math.round(layer.opacity * 100) + '%';
+      document.getElementById('blendModeSelect').value = layer.blendMode;
+
+      renderLayersList();
+      renderAll();
+    }
+
+    function applyColorToActiveLayer(hex) {
+      const layer = state.layers.find(l => l.id === state.activeLayerId);
+      if (layer) {
+        layer.paintedColor = hex;
+        renderLayersList();
+        renderAll();
+      }
+    }
+
+    function clearCurrentLayerPaint() {
+      clearLayerPaint(state.activeLayerId);
+    }
+
+    function clearLayerPaint(layerId) {
+      const layer = state.layers.find(l => l.id === layerId);
+      if (layer) {
+        layer.paintedColor = null;
+        renderLayersList();
+        renderAll();
+      }
+    }
+
+    function resetAllLayers() {
+      state.layers.forEach(l => l.paintedColor = null);
+      renderLayersList();
+      renderAll();
+    }
+
+    // --- PALETTE & COLOR PICKER logic ---
+    function switchPaletteCategory(catKey) {
+      // Highlight Active Category Button
+      ['Modern', 'Slate', 'Terracotta', 'Coastal'].forEach(k => {
+        const btn = document.getElementById('cat' + k);
+        if (btn) {
+          if (k.toLowerCase() === catKey) {
+            btn.className = 'px-2.5 py-1.5 rounded-lg bg-indigo-600 text-white font-medium text-left';
+          } else {
+            btn.className = 'px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-left';
+          }
+        }
+      });
+
+      const swatchesContainer = document.getElementById('paletteSwatches');
+      swatchesContainer.innerHTML = '';
+
+      palettes[catKey].forEach(color => {
+        const sw = document.createElement('button');
+        sw.className = 'group relative flex flex-col items-center p-1.5 bg-slate-800/60 rounded-xl hover:bg-slate-800 border border-slate-700/60 transition';
+        sw.onclick = () => applyColorToActiveLayer(color.hex);
+
+        sw.innerHTML = `
+          <div class="w-full h-10 rounded-lg shadow-inner border border-white/10 group-hover:scale-105 transition" style="background-color: ${color.hex}"></div>
+          <span class="text-[10px] text-slate-300 mt-1 font-medium truncate w-full text-center">${color.name}</span>
+        `;
+        swatchesContainer.appendChild(sw);
+      });
+    }
+
+    function applyCustomHexColor() {
+      const hex = document.getElementById('customHexInput').value;
+      if (/^#[0-9A-F]{6}$/i.test(hex)) {
+        applyColorToActiveLayer(hex);
+      }
+    }
+
+    document.getElementById('customColorPicker').addEventListener('input', function(e) {
+      const val = e.target.value;
+      document.getElementById('customHexInput').value = val.toUpperCase();
+      applyColorToActiveLayer(val);
+    });
+
+    // --- INTERACTIVE MASK BRUSH / PAINT CANVAS EVENTS ---
+    function setupEventListeners() {
+      const viewport = document.getElementById('canvasViewport');
+
+      viewport.addEventListener('mousedown', onPointerDown);
+      viewport.addEventListener('mousemove', onPointerMove);
+      window.addEventListener('mouseup', onPointerUp);
+
+      // Wheel Zoom
+      viewport.addEventListener('wheel', function(e) {
+        e.preventDefault();
+        const factor = e.deltaY < 0 ? 1.1 : 0.9;
+        zoomCanvas(factor);
+      }, { passive: false });
+
+      // Opacity Slider
+      document.getElementById('opacitySlider').addEventListener('input', function(e) {
+        const val = e.target.value / 100;
+        const layer = state.layers.find(l => l.id === state.activeLayerId);
+        if (layer) {
+          layer.opacity = val;
+          document.getElementById('opacityVal').innerText = e.target.value + '%';
+          renderAll();
+        }
+      });
+
+      // Brush Radius HUD
+      document.getElementById('brushRadiusInput').addEventListener('input', function(e) {
+        state.brushRadius = parseInt(e.target.value);
+        document.getElementById('brushRadiusVal').innerText = state.brushRadius + 'px';
+      });
+
+      // Sample Selector Dropdown Toggle
+      document.getElementById('sampleBtn').addEventListener('click', function() {
+        document.getElementById('sampleDropdown').classList.toggle('hidden');
+      });
+    }
+
+    function getCanvasCoordinates(e) {
+      const rect = baseCanvas.getBoundingClientRect();
+      const scaleX = baseCanvas.width / rect.width;
+      const scaleY = baseCanvas.height / rect.height;
+      return {
+        x: (e.clientX - rect.left) * scaleX,
+        y: (e.clientY - rect.top) * scaleY
+      };
+    }
+
+    function onPointerDown(e) {
+      if (state.activeTool === 'pan') {
+        state.isPanning = true;
+        state.startPanX = e.clientX - state.panX;
+        state.startPanY = e.clientY - state.panY;
+      } else if (state.activeTool === 'brush' || state.activeTool === 'eraser') {
+        state.isDrawingMask = true;
+        paintMaskStroke(e);
+      } else if (state.activeTool === 'paint') {
+        // Quick color pick or fill area
+        const coords = getCanvasCoordinates(e);
+        const layer = state.layers.find(l => l.id === state.activeLayerId);
+        if (layer && layer.maskCtx) {
+          layer.maskCtx.fillStyle = '#FFFFFF';
+          layer.maskCtx.beginPath();
+          layer.maskCtx.arc(coords.x, coords.y, 40, 0, Math.PI * 2);
+          layer.maskCtx.fill();
+          renderAll();
+        }
+      }
+    }
+
+    function onPointerMove(e) {
+      if (state.isPanning) {
+        state.panX = e.clientX - state.startPanX;
+        state.panY = e.clientY - state.startPanY;
+        updateTransform();
+      } else if (state.isDrawingMask) {
+        paintMaskStroke(e);
+      }
+    }
+
+    function onPointerUp() {
+      state.isPanning = false;
+      state.isDrawingMask = false;
+    }
+
+    function paintMaskStroke(e) {
+      const coords = getCanvasCoordinates(e);
+      const layer = state.layers.find(l => l.id === state.activeLayerId);
+      if (!layer || !layer.maskCtx) return;
+
+      const ctx = layer.maskCtx;
+      ctx.lineWidth = state.brushRadius * 2;
+      ctx.lineCap = 'round';
+
+      if (state.activeTool === 'brush') {
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.strokeStyle = '#FFFFFF';
+      } else if (state.activeTool === 'eraser') {
+        ctx.globalCompositeOperation = 'destination-out';
+      }
+
+      ctx.beginPath();
+      ctx.arc(coords.x, coords.y, state.brushRadius, 0, Math.PI * 2);
+      ctx.fill();
+
+      renderAll();
+    }
+
+    // --- TOOLS & ZOOM CONTROLS ---
+    function setActiveTool(tool) {
+      state.activeTool = tool;
+      ['pan', 'paint', 'brush', 'eraser'].forEach(t => {
+        const cap = t.charAt(0).toUpperCase() + t.slice(1);
+        const btn = document.getElementById('tool' + cap);
+        if (btn) {
+          if (t === tool) {
+            btn.className = 'p-2.5 rounded-xl bg-indigo-600 text-white shadow-md transition';
+          } else {
+            btn.className = 'p-2.5 rounded-xl text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition';
+          }
+        }
+      });
+
+      // Show/Hide Brush HUD
+      const hud = document.getElementById('brushHud');
+      if (tool === 'brush' || tool === 'eraser') {
+        hud.classList.remove('hidden');
+      } else {
+        hud.classList.add('hidden');
+      }
+    }
+
+    function toggleMaskOverlayView() {
+      state.showMaskOverlay = !state.showMaskOverlay;
+      const btn = document.getElementById('toggleMaskOverlay');
+      btn.className = state.showMaskOverlay 
+        ? 'p-2.5 rounded-xl bg-indigo-600 text-white shadow-md transition'
+        : 'p-2.5 rounded-xl text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition';
+      renderAll();
+    }
+
+    function zoomCanvas(factor) {
+      state.zoom = Math.min(Math.max(0.5, state.zoom * factor), 4);
+      document.getElementById('zoomLevelText').innerText = Math.round(state.zoom * 100) + '%';
+      updateTransform();
+    }
+
+    function resetZoom() {
+      state.zoom = 1;
+      state.panX = 0;
+      state.panY = 0;
+      document.getElementById('zoomLevelText').innerText = '100%';
+      updateTransform();
+    }
+
+    function updateTransform() {
+      const container = document.getElementById('canvasTransformContainer');
+      container.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
+    }
+
+    function switchTab(tab) {
+      if (tab === 'layers') {
+        document.getElementById('tabLayers').classList.remove('hidden');
+        document.getElementById('tabPalette').classList.add('hidden');
+        document.getElementById('tabLayersBtn').className = 'flex-1 py-3 border-b-2 border-indigo-500 text-indigo-400 font-semibold flex items-center justify-center space-x-1.5';
+        document.getElementById('tabPaletteBtn').className = 'flex-1 py-3 border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center justify-center space-x-1.5';
+      } else {
+        document.getElementById('tabLayers').classList.add('hidden');
+        document.getElementById('tabPalette').classList.remove('hidden');
+        document.getElementById('tabPaletteBtn').className = 'flex-1 py-3 border-b-2 border-indigo-500 text-indigo-400 font-semibold flex items-center justify-center space-x-1.5';
+        document.getElementById('tabLayersBtn').className = 'flex-1 py-3 border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center justify-center space-x-1.5';
+      }
+    }
+
+    function updateBlendMode(mode) {
+      const layer = state.layers.find(l => l.id === state.activeLayerId);
+      if (layer) {
+        layer.blendMode = mode;
+        renderAll();
+      }
+    }
+
+    // --- BEFORE / AFTER COMPARE SLIDER ---
+    function toggleCompareMode() {
+      state.compareMode = !state.compareMode;
+      const container = document.getElementById('compareSliderContainer');
+      const btnText = document.getElementById('compareBtnText');
+
+      if (state.compareMode) {
+        container.classList.remove('hidden');
+        btnText.innerText = 'Exit Compare';
+        paintCanvas.style.clipPath = 'polygon(50% 0, 100% 0, 100% 100%, 50% 100%)';
+        setupCompareDrag();
+      } else {
+        container.classList.add('hidden');
+        btnText.innerText = 'Split Compare';
+        paintCanvas.style.clipPath = 'none';
+      }
+    }
+
+    function setupCompareDrag() {
+      const divider = document.getElementById('compareDivider');
+      const viewport = document.getElementById('canvasViewport');
+
+      function onDrag(e) {
+        const rect = viewport.getBoundingClientRect();
+        let posX = e.clientX - rect.left;
+        posX = Math.max(0, Math.min(posX, rect.width));
+        const pct = (posX / rect.width) * 100;
+
+        divider.style.left = `${pct}%`;
+        paintCanvas.style.clipPath = `polygon(${pct}% 0, 100% 0, 100% 100%, ${pct}% 100%)`;
+      }
+
+      function stopDrag() {
+        window.removeEventListener('mousemove', onDrag);
+        window.removeEventListener('mouseup', stopDrag);
+      }
+
+      divider.addEventListener('mousedown', function() {
+        window.addEventListener('mousemove', onDrag);
+        window.addEventListener('mouseup', stopDrag);
+      });
+    }
+
+    // --- EXPORT FINAL IMAGE ---
+    function exportImage() {
+      const exportCanvas = document.createElement('canvas');
+      exportCanvas.width = baseCanvas.width;
+      exportCanvas.height = baseCanvas.height;
+      const ctx = exportCanvas.getContext('2d');
+
+      // Draw base
+      ctx.drawImage(baseCanvas, 0, 0);
+      // Draw painted layer
+      ctx.drawImage(paintCanvas, 0, 0);
+
+      const link = document.createElement('a');
+      link.download = 'exterior-paint-visualization.png';
+      link.href = exportCanvas.toDataURL('image/png');
+      link.click();
+    }
+  </script>
+</body>
+</html>

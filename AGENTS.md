@@ -20,3 +20,9 @@ Preserve the existing Bihani Paints visual language: light surfaces, restrained 
 - Establish hierarchy with placement, contrast, and restrained color before decoration.
 - Keep interactions reversible and clearly distinguish surface selection from painting or refinement modes.
 - Describe local image processing accurately; do not imply a model was used when it was not.
+
+## Secrets and Environment Files
+- Never open, read, print, modify, or commit `.env`, `.env.*`, or credential files.
+- Use `.env.example` for variable names and configuration shape only.
+- Never include secret values in responses, logs, patches, screenshots, or tests.
+- If a task needs a secret, use a separately injected runtime value or ask the user to provide a sanitized placeholder.

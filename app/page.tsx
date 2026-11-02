@@ -27,8 +27,12 @@ import { PaletteSuggestionTheme } from '@/app/api/gemini/suggest-palettes/route'
 import {
   ArchitecturalLayer,
   LayerColourAssignment,
+  RasterMask,
   deserializeLayers,
+  deserializeMask,
+  cloneMask,
   MAX_WORKING_MASK_PIXELS,
+  serializeMask,
   serializeLayers,
 } from '@/lib/architectural-layer-engine';
 
@@ -37,6 +41,7 @@ interface HistoryState {
   codes: Record<string, string>;
   customLayers: ArchitecturalLayer[];
   customColourAssignments: Record<string, LayerColourAssignment>;
+  customProtectedMask: RasterMask | null;
 }
 
 export default function BihaniVisualizerPage() {
@@ -68,6 +73,9 @@ export default function BihaniVisualizerPage() {
   const [customColourAssignments, setCustomColourAssignments] = useState<
     Record<string, LayerColourAssignment>
   >({});
+  const [customProtectedMask, setCustomProtectedMask] = useState<RasterMask | null>(null);
+  const [decompositionStatus, setDecompositionStatus] = useState<'idle' | 'processing' | 'ready' | 'fallback'>('idle');
+  const decompositionAbortRef = useRef<AbortController | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
   // Undo / Redo stacks (up to 25 steps)
@@ -126,6 +134,9 @@ export default function BihaniVisualizerPage() {
     setColorCodesMap(init.codeMap);
     setCustomLayers([]);
     setCustomColourAssignments({});
+    setCustomProtectedMask(null);
+    decompositionAbortRef.current?.abort();
+    setDecompositionStatus('idle');
     setHistory([]);
     setFuture([]);
     setIsGlancingOriginal(false);
@@ -182,8 +193,42 @@ export default function BihaniVisualizerPage() {
       setCustomImageSrc(resizedDataUrl);
       setCustomLayers([]);
       setCustomColourAssignments({});
+      setCustomProtectedMask(null);
       setHistory([]);
       setFuture([]);
+      decompositionAbortRef.current?.abort();
+      const decompositionController = new AbortController();
+      decompositionAbortRef.current = decompositionController;
+      setDecompositionStatus('processing');
+      void fetch('/api/decompose-architecture', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageDataUrl: resizedDataUrl, imageWidth: width, imageHeight: height }),
+        signal: decompositionController.signal,
+      })
+        .then(async (response) => {
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(payload.error || 'Automatic decomposition failed.');
+          if (payload.imageWidth !== width || payload.imageHeight !== height) {
+            throw new Error('Automatic decomposition returned mismatched image dimensions.');
+          }
+          const restoredLayers = deserializeLayers(payload.layers ?? []);
+          const restoredProtectedMask = deserializeMask(payload.protectedMask);
+          if (
+            restoredProtectedMask.width !== width ||
+            restoredProtectedMask.height !== height
+          ) throw new Error('Automatic decomposition returned an invalid protected mask.');
+          setCustomLayers(restoredLayers);
+          setCustomProtectedMask(restoredProtectedMask);
+          setDecompositionStatus('ready');
+        })
+        .catch((error: unknown) => {
+          if (decompositionController.signal.aborted) return;
+          setDecompositionStatus('fallback');
+          setUploadError(error instanceof Error
+            ? `${error.message} You can continue with manual selection.`
+            : 'Automatic decomposition failed. You can continue with manual selection.');
+        });
     };
     image.onerror = () => {
       URL.revokeObjectURL(objectUrl);
@@ -202,6 +247,7 @@ export default function BihaniVisualizerPage() {
         codes: { ...colorCodesMap },
         customLayers,
         customColourAssignments: { ...customColourAssignments },
+        customProtectedMask: customProtectedMask ? cloneMask(customProtectedMask) : null,
       },
     ]);
     setFuture([]);
@@ -225,6 +271,7 @@ export default function BihaniVisualizerPage() {
         codes: { ...colorCodesMap },
         customLayers,
         customColourAssignments: { ...customColourAssignments },
+        customProtectedMask: customProtectedMask ? cloneMask(customProtectedMask) : null,
       },
     ]);
     setFuture([]);
@@ -251,6 +298,7 @@ export default function BihaniVisualizerPage() {
         codes: { ...colorCodesMap },
         customLayers,
         customColourAssignments: { ...customColourAssignments },
+        customProtectedMask: customProtectedMask ? cloneMask(customProtectedMask) : null,
       },
       ...prev,
     ]);
@@ -258,6 +306,7 @@ export default function BihaniVisualizerPage() {
     setColorCodesMap(last.codes);
     setCustomLayers(last.customLayers);
     setCustomColourAssignments({ ...last.customColourAssignments });
+    setCustomProtectedMask(last.customProtectedMask ? cloneMask(last.customProtectedMask) : null);
     setHistory((prev) => prev.slice(0, prev.length - 1));
   };
 
@@ -271,12 +320,14 @@ export default function BihaniVisualizerPage() {
         codes: { ...colorCodesMap },
         customLayers,
         customColourAssignments: { ...customColourAssignments },
+        customProtectedMask: customProtectedMask ? cloneMask(customProtectedMask) : null,
       },
     ]);
     setActiveColors(next.colors);
     setColorCodesMap(next.codes);
     setCustomLayers(next.customLayers);
     setCustomColourAssignments({ ...next.customColourAssignments });
+    setCustomProtectedMask(next.customProtectedMask ? cloneMask(next.customProtectedMask) : null);
     setFuture((prev) => prev.slice(1));
   };
 
@@ -284,6 +335,10 @@ export default function BihaniVisualizerPage() {
     nextLayers: ArchitecturalLayer[],
     nextAssignments: Record<string, LayerColourAssignment>
   ) => {
+    if (decompositionStatus === 'processing') {
+      decompositionAbortRef.current?.abort();
+      setDecompositionStatus('fallback');
+    }
     setHistory((prev) => [
       ...prev.slice(-24),
       {
@@ -291,6 +346,7 @@ export default function BihaniVisualizerPage() {
         codes: { ...colorCodesMap },
         customLayers,
         customColourAssignments: { ...customColourAssignments },
+        customProtectedMask: customProtectedMask ? cloneMask(customProtectedMask) : null,
       },
     ]);
     setFuture([]);
@@ -348,6 +404,7 @@ export default function BihaniVisualizerPage() {
       customImageSrc,
       customLayers: serializeLayers(customLayers),
       customColourAssignments: { ...customColourAssignments },
+      customProtectedMask: customProtectedMask ? serializeMask(customProtectedMask) : undefined,
     };
 
     const updated = [newProject, ...savedProjects];
@@ -388,6 +445,8 @@ export default function BihaniVisualizerPage() {
     setColorCodesMap(project.colorCodesMap);
     setCustomLayers(project.customLayers ? deserializeLayers(project.customLayers) : []);
     setCustomColourAssignments(project.customColourAssignments ?? {});
+    setCustomProtectedMask(project.customProtectedMask ? deserializeMask(project.customProtectedMask) : null);
+    setDecompositionStatus(project.customLayers?.some((layer) => layer.source === 'AI') ? 'ready' : 'idle');
     setCustomerDetails(project.customer);
     setHistory([]);
     setFuture([]);
@@ -441,6 +500,16 @@ export default function BihaniVisualizerPage() {
             {uploadError}
           </p>
         )}
+        {customImageSrc && decompositionStatus === 'processing' && (
+          <p role="status" className="mb-3 rounded-lg bg-[#147a82]/10 px-3 py-2 text-xs font-medium text-[#0f4f56]">
+            Analysing architectural surfaces… You can continue manually if this takes too long.
+          </p>
+        )}
+        {customImageSrc && decompositionStatus === 'ready' && (
+          <p role="status" className="mb-3 rounded-lg bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800">
+            AI surface analysis complete. Review the generated selections before painting.
+          </p>
+        )}
         {/* Interactive Canvas Recolor Engine & Split Slider */}
         <CanvasViewer
           preset={activePreset}
@@ -455,6 +524,7 @@ export default function BihaniVisualizerPage() {
           }}
           customLayers={customLayers}
           customColourAssignments={customColourAssignments}
+          customProtectedMask={customProtectedMask}
           onCustomPaint={handleCustomPaint}
           canUndo={history.length > 0}
           canRedo={future.length > 0}

@@ -1,0 +1,24 @@
+default_permissions = "safe-workspace"
+approval_policy = "on-request"
+
+[permissions.safe-workspace.filesystem]
+glob_scan_max_depth = 4
+":minimal" = "read"
+":root" = "read"
+":tmpdir" = "write"
+":slash_tmp" = "write"
+
+[permissions.safe-workspace.filesystem.":workspace_roots"]
+"." = "write"
+".env" = "deny"
+".env.*" = "deny"
+"**/.env" = "deny"
+"**/.env.*" = "deny"
+"**/*.pem" = "deny"
+"**/*.key" = "deny"
+"**/id_rsa" = "deny"
+"**/id_ed25519" = "deny"
+"**/.npmrc" = "deny"
+"**/.pypirc" = "deny"
+"**/.netrc" = "deny"
+"**/secrets" = "deny"

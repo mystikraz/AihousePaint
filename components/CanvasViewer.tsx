@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import {
   ZoomIn,
   ZoomOut,
@@ -31,8 +31,10 @@ import {
   MAX_WORKING_MASK_PIXELS,
   RasterMask,
   cloneMask,
+  combineMasks,
   createSelectionOverlayData,
   createRectangleMask,
+  fillSmallMaskHoles,
   layersFromPreset,
   mergeMasks,
   paintMaskStrokeInPlace,
@@ -51,6 +53,7 @@ interface CanvasViewerProps {
   onApplyPaletteMap: (colorMap: Record<string, string>, codesMap: Record<string, string>) => void;
   customLayers: ArchitecturalLayer[];
   customColourAssignments: Record<string, LayerColourAssignment>;
+  customProtectedMask: RasterMask | null;
   onCustomPaint: (
     layers: ArchitecturalLayer[],
     assignments: Record<string, LayerColourAssignment>
@@ -80,6 +83,7 @@ export function CanvasViewer({
   onToggleCompare,
   customLayers,
   customColourAssignments,
+  customProtectedMask,
   onCustomPaint,
 }: CanvasViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -99,6 +103,7 @@ export function CanvasViewer({
   const [isDraggingSlider, setIsDraggingSlider] = useState(false);
   const [selectionMode, setSelectionMode] = useState<'select' | 'rectangle' | 'add' | 'remove' | 'brush-add' | 'brush-remove'>('select');
   const [brushRadius, setBrushRadius] = useState(28);
+  const [manualSurfaceName, setManualSurfaceName] = useState('Pillar');
   const [isSegmenting, setIsSegmenting] = useState(false);
   const [rectangleDraft, setRectangleDraft] = useState<{
     pointerId: number;
@@ -128,6 +133,9 @@ export function CanvasViewer({
   const segmentationRequestIdRef = useRef(0);
   const isBrushMode = selectionMode === 'brush-add' || selectionMode === 'brush-remove';
   const isRectangleMode = selectionMode === 'rectangle';
+  const getEffectiveProtectedMask = useCallback(() => combineMasks(
+    [protectedMaskRef.current, customProtectedMask].filter((mask): mask is RasterMask => !!mask)
+  ), [customProtectedMask]);
 
   useEffect(() => () => segmentationProvider.current.dispose(), []);
 
@@ -216,7 +224,7 @@ export function CanvasViewer({
       recolorCanvasRef.current,
       layers,
       assignments,
-      isCustomImage && protectedMaskRef.current ? [protectedMaskRef.current] : []
+      isCustomImage ? [getEffectiveProtectedMask()].filter((mask): mask is RasterMask => !!mask) : []
     );
 
     // Draw to visible display canvas
@@ -283,7 +291,7 @@ export function CanvasViewer({
         if (!overlayContext) return;
 
         const overlay = ctx.createImageData(width, height);
-        overlay.data.set(createSelectionOverlayData(selectedLayer.mask, protectedMaskRef.current ?? undefined));
+        overlay.data.set(createSelectionOverlayData(selectedLayer.mask, selectedLayer.overrideProtected ? undefined : getEffectiveProtectedMask() ?? undefined));
         overlayContext.putImageData(overlay, 0, 0);
         ctx.drawImage(overlayCanvas, 0, 0);
       }
@@ -314,6 +322,8 @@ export function CanvasViewer({
     sliderPosition,
     customLayers,
     customColourAssignments,
+    customProtectedMask,
+    getEffectiveProtectedMask,
     selectionMode,
     isBrushMode,
     rectangleDraft,
@@ -389,7 +399,7 @@ export function CanvasViewer({
       y,
       brushRadius,
       value,
-      protectedMaskRef.current ?? undefined
+      customLayers.find((layer) => layer.id === stroke.layerId)?.overrideProtected ? undefined : getEffectiveProtectedMask() ?? undefined
     );
     for (let step = 1; step <= steps; step++) {
       const ratio = step / steps;
@@ -462,8 +472,7 @@ export function CanvasViewer({
         rectangleDraft.startX,
         rectangleDraft.startY,
         pixelX,
-        pixelY,
-        protectedMaskRef.current ?? undefined
+        pixelY
       );
       setRectangleDraft(null);
       if (!mask.data.some(Boolean)) return;
@@ -471,30 +480,24 @@ export function CanvasViewer({
       const nextLayer: ArchitecturalLayer = {
         id: layerId,
         parentId: null,
-        name: `Rectangle selection ${customLayers.length + 1}`,
+        name: `${manualSurfaceName.trim() || 'Manual surface'} ${customLayers.length + 1}`,
         type: 'manual',
         mask,
         confidence: 1,
         visible: true,
         locked: false,
         selected: true,
-        assignedColorId: activeColor.code,
+        assignedColorId: null,
         zIndex: customLayers.length,
         source: 'manual',
+        overrideProtected: true,
       };
       onCustomPaint(
         customLayers.map((layer) => ({ ...layer, selected: false })).concat(nextLayer),
-        {
-          ...customColourAssignments,
-          [layerId]: {
-            colorId: activeColor.code,
-            colorHex: activeColor.hex,
-            colorCode: activeColor.code,
-          },
-        }
+        customColourAssignments
       );
       setClickNotification({
-        text: `Rectangle selected and painted with ${activeColor.code}`,
+        text: 'Area selected. Choose a paint color.',
         xPct,
         yPct,
       });
@@ -548,7 +551,7 @@ export function CanvasViewer({
           x: pixelX,
           y: pixelY,
           positivePoints: [{ x: pixelX, y: pixelY }],
-          protectedMask: protectedMaskRef.current ?? undefined,
+          protectedMask: getEffectiveProtectedMask() ?? undefined,
           signal: controller.signal,
           // Keep the click local to one architectural surface. A looser fill
           // crosses similarly coloured walls, roofs, and trim in house photos.
@@ -694,7 +697,7 @@ export function CanvasViewer({
               onPointerCancel={finishBrushStroke}
               onMouseMove={handleMouseMove}
               onMouseLeave={handleMouseLeave}
-              style={{ touchAction: isBrushMode ? 'none' : undefined }}
+              style={{ touchAction: isBrushMode || isRectangleMode ? 'none' : undefined }}
               className={`w-full h-full object-contain ${
                 isCompareMode
                   ? 'cursor-ew-resize'
@@ -846,6 +849,22 @@ export function CanvasViewer({
             <>
               <div className="h-4 w-px bg-slate-200 mx-1" />
               <span className="text-[11px] font-semibold text-slate-500">Selection:</span>
+              <label className="flex items-center gap-1 text-xs text-slate-600">
+                New area
+                <input value={manualSurfaceName} onChange={(event) => setManualSurfaceName(event.target.value)} maxLength={40}
+                  aria-label="New area name" className="w-24 rounded-lg border border-slate-200 px-2 py-1.5 text-slate-700" />
+              </label>
+              <button
+                type="button"
+                disabled={!customLayers.some((layer) => layer.selected && !layer.locked)}
+                onClick={() => onCustomPaint(customLayers.map((layer) => layer.selected && !layer.locked
+                  ? { ...layer, mask: fillSmallMaskHoles(layer.mask, getEffectiveProtectedMask() ?? undefined) }
+                  : layer), customColourAssignments)}
+                className="text-xs font-medium px-2.5 py-1.5 rounded-lg border bg-white text-slate-700 border-slate-200 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Fill small enclosed gaps in the selected area; protected areas remain unchanged"
+              >
+                Fill small gaps
+              </button>
               {isSegmenting && (
                 <span role="status" className="text-[11px] font-medium text-[#147a82]">
                   Selecting surface…
@@ -853,7 +872,7 @@ export function CanvasViewer({
               )}
               {([
                 ['select', 'Select surface'],
-                ['rectangle', 'Rectangle select'],
+                ['rectangle', 'Draw area'],
                 ['add', 'Add area'],
                 ['remove', 'Remove area'],
               ] as const).map(([mode, label]) => (
@@ -861,7 +880,7 @@ export function CanvasViewer({
                   key={mode}
                   type="button"
                   onClick={() => setSelectionMode(mode)}
-                  disabled={mode !== 'select' && !customLayers.some((layer) => layer.selected && !layer.locked)}
+                  disabled={(mode === 'add' || mode === 'remove') && !customLayers.some((layer) => layer.selected && !layer.locked)}
                   className={`text-xs font-medium px-2.5 py-1.5 rounded-lg border transition-colors ${
                     selectionMode === mode
                       ? 'bg-[#147a82]/10 text-[#147a82] border-[#147a82]'

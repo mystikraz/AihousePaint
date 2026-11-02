@@ -85,6 +85,11 @@ export async function POST(request: NextRequest) {
       concept: error instanceof DecompositionStageError ? error.concept : undefined,
       errorType: original instanceof OpenAI.APIError ? 'APIError' : original instanceof RangeError ? 'RangeError' : original instanceof SyntaxError ? 'SyntaxError' : original instanceof Error ? 'Error' : 'unknown',
       upstreamStatus: original instanceof OpenAI.APIError ? original.status : undefined,
+      // Log only known provider codes; arbitrary upstream text could contain image data or secrets.
+      upstreamCode: original instanceof OpenAI.APIError
+        ? (['model_not_found', 'file_not_found', 'invalid_api_key'].includes(original.code ?? '')
+          ? original.code : original.code ? 'other' : undefined)
+        : undefined,
       aborted,
     });
     return NextResponse.json({

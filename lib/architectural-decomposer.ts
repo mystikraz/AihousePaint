@@ -23,6 +23,13 @@ export interface ArchitecturalDecomposer {
   decompose(request: ArchitecturalDecomposerRequest): Promise<ArchitecturalDecompositionResult>;
 }
 
+export class DecompositionStageError extends Error {
+  constructor(readonly stage: string, readonly concept: string | undefined, readonly originalError: unknown) {
+    super('Architectural decomposition failed.');
+    this.name = 'DecompositionStageError';
+  }
+}
+
 export class SamConceptProvider implements ArchitecturalDecomposer {
   readonly provider = 'meta-sam';
   readonly modelVersion = 'sam-3.1';
@@ -42,6 +49,8 @@ export class SamConceptProvider implements ArchitecturalDecomposer {
 
     for (const concept of ARCHITECTURAL_CONCEPTS) {
       if (signal?.aborted) throw new DOMException('Decomposition cancelled.', 'AbortError');
+      let stage = 'provider_request';
+      try {
       const events = await this.client.responses.create({
         model: this.modelVersion,
         input: [{
@@ -58,6 +67,7 @@ export class SamConceptProvider implements ArchitecturalDecomposer {
           include_confidence: 'true',
         },
       }, { signal });
+      stage = 'response_parsing';
       const parsed = parseImageStream(events);
       const result = await parsed.finalResult;
       if (result.outcome.status !== 'completed') {
@@ -95,8 +105,12 @@ export class SamConceptProvider implements ArchitecturalDecomposer {
           },
         });
       }
+      } catch (error) {
+        throw new DecompositionStageError(stage, concept.prompt, error);
+      }
     }
 
+    try {
     const normalized = normalizeArchitecturalCandidates(
       candidates,
       imageWidth,
@@ -105,6 +119,9 @@ export class SamConceptProvider implements ArchitecturalDecomposer {
       this.modelVersion
     );
     return { ...normalized, warnings: [...warnings, ...normalized.warnings] };
+    } catch (error) {
+      throw new DecompositionStageError('mask_normalization', undefined, error);
+    }
   }
 }
 

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { SamConceptProvider } from '@/lib/architectural-decomposer';
+import { DecompositionStageError, SamConceptProvider } from '@/lib/architectural-decomposer';
+import OpenAI from 'openai';
 import { serializeArchitecturalDecomposition, validateImageDimensions } from '@/lib/architectural-decomposition';
 
 export const runtime = 'nodejs';
@@ -77,6 +78,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(serializeArchitecturalDecomposition(result));
   } catch (error) {
     const aborted = timeoutController.signal.aborted;
+    const original = error instanceof DecompositionStageError ? error.originalError : error;
+    // Do not log error messages or response bodies: upstream errors may contain request data.
+    console.error('Architectural decomposition error', {
+      stage: error instanceof DecompositionStageError ? error.stage : 'provider_setup_or_serialization',
+      concept: error instanceof DecompositionStageError ? error.concept : undefined,
+      errorType: original instanceof OpenAI.APIError ? 'APIError' : original instanceof RangeError ? 'RangeError' : original instanceof SyntaxError ? 'SyntaxError' : original instanceof Error ? 'Error' : 'unknown',
+      upstreamStatus: original instanceof OpenAI.APIError ? original.status : undefined,
+      aborted,
+    });
     return NextResponse.json({
       error: aborted ? 'Architectural decomposition timed out or was cancelled.' : 'Architectural decomposition failed.',
       code: aborted ? 'provider_timeout' : 'provider_error',
